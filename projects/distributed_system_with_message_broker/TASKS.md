@@ -11,13 +11,13 @@ This file is the execution source of truth. Do not advance to the next phase unt
 - [x] Add initial docs and task roadmap.
 - [x] Add CI workflow for `cargo test`, `bun test`, and `bun run typecheck`.
 - [x] Add architecture decision records for dependency constraints.
-- [ ] Add local development scripts for running 1, 3, and 5 node clusters.
+- [x] Add local development scripts for running 1, 3, and 5 node clusters.
 
 Exit criteria:
 
-- [ ] Fresh clone can run Rust tests.
-- [ ] Fresh clone can install gateway dependencies and run Bun tests.
-- [ ] README explains project goals, layout, and commands.
+- [x] Fresh clone can run Rust tests.
+- [x] Fresh clone can install gateway dependencies and run Bun tests.
+- [x] README explains project goals, layout, and commands.
 
 ## 1. Storage and Raw Networking Foundation
 
@@ -37,14 +37,14 @@ Goal: one Rust node accepts bytes, persists them, reads them back, and responds 
 
 ### 1.2 Custom kqueue Event Loop
 
-- [ ] Write a minimal non-blocking TCP listener test harness.
-- [ ] Create safe wrapper around `libc::kqueue` and `libc::kevent`.
-- [ ] Register listener socket read readiness.
-- [ ] Accept non-blocking client sockets.
-- [ ] Register client read/write readiness.
-- [ ] Implement per-connection read buffers.
-- [ ] Implement per-connection write queues.
-- [ ] Add graceful close and error cleanup.
+- [x] Write a minimal non-blocking TCP listener test harness.
+- [x] Create safe wrapper around `libc::kqueue` and `libc::kevent`.
+- [x] Register listener socket read readiness.
+- [x] Accept non-blocking client sockets.
+- [x] Register client read/write readiness.
+- [x] Implement per-connection read buffers.
+- [x] Implement per-connection write queues.
+- [x] Add graceful close and error cleanup.
 - [ ] Benchmark with 100 concurrent `nc` or scripted TCP clients.
 
 ### 1.3 Binary Protocol
@@ -52,17 +52,17 @@ Goal: one Rust node accepts bytes, persists them, reads them back, and responds 
 - [x] Define initial frame shape: `[length:u32_be][opcode:u8][payload:N]`.
 - [x] Add Rust frame encode/decode tests.
 - [x] Add TypeScript frame encode/decode tests.
-- [ ] Add streaming decoder that handles partial frames.
-- [ ] Add max frame size.
-- [ ] Add error response frame payload format.
-- [ ] Document opcode registry in `docs/binary-protocol.md`.
+- [x] Add streaming decoder that handles partial frames.
+- [x] Add max frame size.
+- [x] Add error response frame payload format.
+- [x] Document opcode registry in `docs/binary-protocol.md`.
 
 Phase 1 success criteria:
 
-- [ ] Rust binary accepts TCP connections from `nc`.
-- [ ] Incoming frames are parsed.
-- [ ] Payloads are written to the WAL and flushed.
-- [ ] Node responds with an ACK frame.
+- [x] Rust binary accepts TCP connections.
+- [x] Incoming frames are parsed.
+- [x] Payloads are written to the WAL and flushed.
+- [x] Node responds with an ACK frame.
 - [ ] 100+ concurrent connections complete successfully on M1 macOS.
 
 ## 2. Cluster Membership with SWIM

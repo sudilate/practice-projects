@@ -22,9 +22,14 @@ TASKS.md               Phase-by-phase execution plan
 
 ## Commands
 
+Run Rust checks:
+
 ```sh
+cargo fmt --check
 cargo test
 ```
+
+Run gateway checks:
 
 ```sh
 cd gateway
@@ -33,6 +38,24 @@ bun test
 bun run typecheck
 ```
 
+Run local core nodes:
+
+```sh
+./scripts/run-1-node.sh
+./scripts/run-3-nodes.sh
+./scripts/run-5-nodes.sh
+```
+
+The multi-node scripts currently start independent append servers on separate ports and WAL files. SWIM discovery and Raft replication are later phases.
+
+Run one node manually:
+
+```sh
+cargo run -p core-engine -- --addr 127.0.0.1:7000 --wal data/node-1.log
+```
+
 ## Current Status
 
-Project scaffold is in place. Phase 1 implementation starts with the WAL test suite and binary protocol hardening before the kqueue event loop is wired.
+Phase 0 is complete. Phase 1 has a strict WAL, Rust and TypeScript frame helpers, streaming decoders, max frame-size enforcement, structured error payloads, and a macOS `kqueue` TCP append server. A single Rust node accepts `AppendTask` frames, appends payloads to the WAL, and responds with `Ack` frames.
+
+Remaining Phase 1 work is load validation with 100+ concurrent clients and benchmarking before moving to SWIM membership.

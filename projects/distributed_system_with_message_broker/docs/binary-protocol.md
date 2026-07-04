@@ -8,7 +8,9 @@ Initial frame format:
 
 `length` is the payload length only. The full frame length is `5 + length`.
 
-## Initial Opcodes
+The maximum payload length is `1 MiB`.
+
+## Opcode Registry
 
 | Opcode | Name | Purpose |
 | --- | --- | --- |
@@ -20,4 +22,22 @@ Initial frame format:
 | 6 | RequestVote | Raft election request. |
 | 7 | AppendEntries | Raft heartbeat and log replication request. |
 
-Streaming decode, max-frame limits, and version negotiation are Phase 1 tasks.
+## Error Payload
+
+`Error` frames use this payload shape:
+
+```text
+[code: u16 big-endian][message_length: u16 big-endian][message: UTF-8 bytes]
+```
+
+Current server behavior:
+
+- Unsupported opcodes return `Error` with code `400`.
+- Protocol decoding failures return `Error` with code `400`.
+- WAL append failures return `Error` with code `500`.
+
+## Streaming Decode
+
+Rust and TypeScript both include streaming decoders that retain partial bytes until a complete frame is available. Multiple frames coalesced in one socket read are emitted in order.
+
+Version negotiation remains a future production-readiness task.
