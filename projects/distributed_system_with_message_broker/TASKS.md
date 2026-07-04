@@ -9,8 +9,8 @@ This file is the execution source of truth. Do not advance to the next phase unt
 - [x] Add Bun/Fastify gateway package.
 - [x] Add placeholder binary protocol in Rust and TypeScript.
 - [x] Add initial docs and task roadmap.
-- [ ] Add CI workflow for `cargo test`, `bun test`, and `bun run typecheck`.
-- [ ] Add architecture decision records for dependency constraints.
+- [x] Add CI workflow for `cargo test`, `bun test`, and `bun run typecheck`.
+- [x] Add architecture decision records for dependency constraints.
 - [ ] Add local development scripts for running 1, 3, and 5 node clusters.
 
 Exit criteria:
@@ -25,15 +25,15 @@ Goal: one Rust node accepts bytes, persists them, reads them back, and responds 
 
 ### 1.1 Write-Ahead Log
 
-- [ ] Write tests for empty WAL creation.
-- [ ] Write tests for appending one record.
-- [ ] Write tests for appending multiple records.
-- [ ] Write tests for rebuilding an in-memory index from an existing `.log` file.
-- [ ] Write tests for rejecting truncated records.
-- [ ] Implement record format: `[length:u32_be][payload:N]`.
-- [ ] Implement append with `sync_data` or explicit durability mode.
-- [ ] Implement indexed retrieval by logical log index.
-- [ ] Add corruption handling policy to `docs/wal-format.md`.
+- [x] Write tests for empty WAL creation.
+- [x] Write tests for appending one record.
+- [x] Write tests for appending multiple records.
+- [x] Write tests for rebuilding an in-memory index from an existing `.log` file.
+- [x] Write tests for rejecting truncated records.
+- [x] Implement record format: `[length:u32_be][payload:N]`.
+- [x] Implement append with `sync_data` or explicit durability mode.
+- [x] Implement indexed retrieval by logical log index.
+- [x] Add corruption handling policy to `docs/wal-format.md`.
 
 ### 1.2 Custom kqueue Event Loop
 
