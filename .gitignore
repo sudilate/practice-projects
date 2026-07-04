@@ -1,3 +1,0 @@
-# Ignore standalone project directories (each has its own Git repo)
-projects/*/
-!projects/.gitkeep

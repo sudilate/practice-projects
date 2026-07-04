@@ -1,0 +1,10 @@
+target/
+
+gateway/node_modules/
+
+*.log
+*.wal
+.DS_Store
+.env
+.env.*
+!.env.example
