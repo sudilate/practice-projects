@@ -253,6 +253,62 @@ mod tests {
         let _ = fs::remove_file(wal_path);
     }
 
+    #[test]
+    fn handles_one_hundred_concurrent_clients() {
+        const CLIENTS: usize = 100;
+
+        let wal_path = test_wal_path("tcp-100-clients");
+        let mut server =
+            AppendServer::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap(), &wal_path)
+                .expect("server binds");
+        let addr = server.local_addr().expect("server addr is available");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+
+        let server_handle = thread::spawn(move || {
+            server
+                .run_until(&server_shutdown)
+                .expect("server exits cleanly");
+        });
+
+        let client_handles: Vec<_> = (0..CLIENTS)
+            .map(|index| {
+                thread::spawn(move || {
+                    let mut stream = TcpStream::connect(addr).expect("client connects");
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .expect("read timeout sets");
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(5)))
+                        .expect("write timeout sets");
+                    let payload = format!("task-{index}").into_bytes();
+                    let request = Frame::new(Opcode::AppendTask, payload)
+                        .encode()
+                        .expect("request encodes");
+                    stream.write_all(&request).expect("request writes");
+
+                    let mut response = [0; 5];
+                    stream.read_exact(&mut response).expect("ACK reads");
+                    let frame = Frame::decode(&response).expect("ACK decodes");
+
+                    assert_eq!(frame.opcode(), Opcode::Ack);
+                })
+            })
+            .collect();
+
+        for handle in client_handles {
+            handle.join().expect("client joins");
+        }
+
+        shutdown.store(true, Ordering::Relaxed);
+        server_handle.join().expect("server joins");
+
+        let wal = Wal::open(&wal_path).expect("WAL reopens");
+        assert_eq!(wal.len(), CLIENTS);
+
+        let _ = fs::remove_file(wal_path);
+    }
+
     fn test_wal_path(name: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

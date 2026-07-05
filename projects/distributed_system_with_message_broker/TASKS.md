@@ -45,7 +45,7 @@ Goal: one Rust node accepts bytes, persists them, reads them back, and responds 
 - [x] Implement per-connection read buffers.
 - [x] Implement per-connection write queues.
 - [x] Add graceful close and error cleanup.
-- [ ] Benchmark with 100 concurrent `nc` or scripted TCP clients.
+- [x] Benchmark with 100 concurrent `nc` or scripted TCP clients.
 
 ### 1.3 Binary Protocol
 
@@ -63,7 +63,7 @@ Phase 1 success criteria:
 - [x] Incoming frames are parsed.
 - [x] Payloads are written to the WAL and flushed.
 - [x] Node responds with an ACK frame.
-- [ ] 100+ concurrent connections complete successfully on M1 macOS.
+- [x] 100+ concurrent connections complete successfully on M1 macOS.
 
 ## 2. Cluster Membership with SWIM
 
@@ -186,8 +186,8 @@ Phase 4 success criteria:
 ## 6. Benchmarking
 
 - [ ] Benchmark WAL append throughput.
-- [ ] Benchmark single-node TCP throughput.
-- [ ] Benchmark 100 concurrent client connections.
+- [x] Benchmark single-node TCP throughput.
+- [x] Benchmark 100 concurrent client connections.
 - [ ] Benchmark Raft commit latency for 3 and 5 nodes.
 - [ ] Benchmark gateway request latency.
 
