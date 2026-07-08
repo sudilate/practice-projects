@@ -84,10 +84,11 @@ Goal: nodes discover peers dynamically and converge on member status without a c
 - [ ] Write pure state-machine tests for indirect ping failure.
 - [x] Write pure state-machine tests for incarnation conflict resolution.
 - [x] Implement member map with `Alive`, `Suspect`, `Failed`, and `Left` states.
+- [x] Implement runtime direct probe loop with local suspect and failed transitions.
 - [ ] Implement randomized peer selection.
 - [x] Implement direct `Ping` and `Ack`.
 - [ ] Implement indirect `PingReq`.
-- [ ] Implement piggybacked dissemination queue.
+- [x] Implement piggybacked dissemination queue.
 - [ ] Add operator command or log output to inspect membership.
 
 Phase 2 success criteria:

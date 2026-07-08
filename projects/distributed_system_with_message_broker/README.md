@@ -70,4 +70,4 @@ Latest local debug-build result on this workspace: `clients=100 successes=100 fa
 
 Phase 0 is complete. Phase 1 has a strict WAL, Rust and TypeScript frame helpers, streaming decoders, max frame-size enforcement, structured error payloads, and a macOS `kqueue` TCP append server. A single Rust node accepts `AppendTask` frames, appends payloads to the WAL, and responds with `Ack` frames.
 
-Phase 1 TCP load validation is complete for 100 concurrent clients. Phase 2 now has UDP datagram transport, Rust membership frame payload codecs, and a minimal SWIM `Join`/`JoinAck` runtime wired into the node loop. The next implementation work is indirect `PingReq`, piggybacked dissemination, randomized probes, and observable membership inspection.
+Phase 1 TCP load validation is complete for 100 concurrent clients. Phase 2 now has UDP datagram transport, Rust membership frame payload codecs, a minimal SWIM `Join`/`JoinAck` runtime, a direct probe loop that marks missed ACKs as `Suspect` and then `Failed`, and piggybacked membership update dissemination. The next implementation work is indirect `PingReq`, randomized probes, and observable membership inspection.

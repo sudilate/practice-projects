@@ -61,6 +61,8 @@ Message payloads:
 - `PingReq`: `[from:string][target:string][relay:string]`
 - `MembershipUpdate`: `[member]`
 
+Membership update dissemination is piggybacked by sending a bounded batch of `MembershipUpdate` frames alongside other outgoing membership traffic. The runtime coalesces queued updates by member ID so the newest known status is retransmitted instead of stale intermediate states.
+
 ## Streaming Decode
 
 Rust and TypeScript both include streaming decoders that retain partial bytes until a complete frame is available. Multiple frames coalesced in one socket read are emitted in order.

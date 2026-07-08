@@ -8,7 +8,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct AppendServer {
     listener: TcpListener,
@@ -38,7 +38,7 @@ impl AppendServer {
         membership_addr: SocketAddr,
         join_peers: Vec<SocketAddr>,
     ) -> io::Result<Self> {
-        let membership = MembershipRuntime::bind(node_id, membership_addr)?;
+        let mut membership = MembershipRuntime::bind(node_id, membership_addr)?;
         membership.send_join_requests(&join_peers)?;
         self.membership = Some(membership);
         Ok(self)
@@ -77,6 +77,9 @@ impl AppendServer {
                     EventFilter::Read => self.read_ready(&kqueue, &mut connections, event.fd)?,
                     EventFilter::Write => write_ready(&kqueue, &mut connections, event.fd)?,
                 }
+            }
+            if let Some(membership) = self.membership.as_mut() {
+                membership.tick(Instant::now())?;
             }
         }
 
