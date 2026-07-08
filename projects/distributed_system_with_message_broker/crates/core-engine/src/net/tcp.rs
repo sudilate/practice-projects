@@ -1,4 +1,5 @@
 use crate::net::kqueue::{EventFilter, Kqueue};
+use crate::net::swim::MembershipRuntime;
 use crate::protocol::{ErrorResponse, Frame, Opcode, StreamingDecoder};
 use crate::storage::Wal;
 use std::collections::{HashMap, VecDeque};
@@ -12,6 +13,7 @@ use std::time::Duration;
 pub struct AppendServer {
     listener: TcpListener,
     wal: Wal,
+    membership: Option<MembershipRuntime>,
 }
 
 impl AppendServer {
@@ -22,11 +24,28 @@ impl AppendServer {
         Ok(Self {
             listener,
             wal: Wal::open(wal_path)?,
+            membership: None,
         })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    pub fn with_membership(
+        mut self,
+        node_id: String,
+        membership_addr: SocketAddr,
+        join_peers: Vec<SocketAddr>,
+    ) -> io::Result<Self> {
+        let membership = MembershipRuntime::bind(node_id, membership_addr)?;
+        membership.send_join_requests(&join_peers)?;
+        self.membership = Some(membership);
+        Ok(self)
+    }
+
+    pub fn membership_addr(&self) -> Option<io::Result<SocketAddr>> {
+        self.membership.as_ref().map(MembershipRuntime::local_addr)
     }
 
     pub fn run(&mut self) -> io::Result<()> {
@@ -36,6 +55,9 @@ impl AppendServer {
     pub fn run_until(&mut self, shutdown: &AtomicBool) -> io::Result<()> {
         let kqueue = Kqueue::new()?;
         kqueue.register_read(self.listener.as_raw_fd())?;
+        if let Some(membership) = &self.membership {
+            membership.register_read(&kqueue)?;
+        }
         let mut connections = HashMap::new();
 
         while !shutdown.load(Ordering::Relaxed) {
@@ -43,6 +65,12 @@ impl AppendServer {
                 if event.fd == self.listener.as_raw_fd() && event.filter == EventFilter::Read {
                     self.accept_ready(&kqueue, &mut connections)?;
                     continue;
+                }
+                if let Some(membership) = self.membership.as_mut() {
+                    if event.fd == membership.fd() && event.filter == EventFilter::Read {
+                        membership.receive_ready()?;
+                        continue;
+                    }
                 }
 
                 match event.filter {

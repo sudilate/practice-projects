@@ -21,6 +21,10 @@ The maximum payload length is `1 MiB`.
 | 5 | AckPing | Membership liveness ACK. |
 | 6 | RequestVote | Raft election request. |
 | 7 | AppendEntries | Raft heartbeat and log replication request. |
+| 8 | Join | Membership join request. |
+| 9 | JoinAck | Membership join response with known members. |
+| 10 | PingReq | Membership indirect ping request. |
+| 11 | MembershipUpdate | Disseminated membership state update. |
 
 ## Error Payload
 
@@ -35,6 +39,27 @@ Current server behavior:
 - Unsupported opcodes return `Error` with code `400`.
 - Protocol decoding failures return `Error` with code `400`.
 - WAL append failures return `Error` with code `500`.
+
+## Membership Payloads
+
+Membership frames are carried over UDP. String fields use `[length:u16_be][utf8:N]`.
+
+Member payload shape:
+
+```text
+[id:string][addr:string][status:u8][incarnation:u64_be]
+```
+
+Status values are `0=Alive`, `1=Suspect`, `2=Failed`, and `3=Left`.
+
+Message payloads:
+
+- `Join`: `[member]`
+- `JoinAck`: `[count:u16_be][member repeated count]`
+- `Ping`: `[from:string][target:string]`
+- `AckPing`: `[from:string][target:string]`
+- `PingReq`: `[from:string][target:string][relay:string]`
+- `MembershipUpdate`: `[member]`
 
 ## Streaming Decode
 

@@ -14,6 +14,10 @@ pub enum Opcode {
     AckPing = 5,
     RequestVote = 6,
     AppendEntries = 7,
+    Join = 8,
+    JoinAck = 9,
+    PingReq = 10,
+    MembershipUpdate = 11,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -28,6 +32,10 @@ impl TryFrom<u8> for Opcode {
             5 => Ok(Self::AckPing),
             6 => Ok(Self::RequestVote),
             7 => Ok(Self::AppendEntries),
+            8 => Ok(Self::Join),
+            9 => Ok(Self::JoinAck),
+            10 => Ok(Self::PingReq),
+            11 => Ok(Self::MembershipUpdate),
             _ => Err(ProtocolError::UnknownOpcode(value)),
         }
     }

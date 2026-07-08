@@ -71,20 +71,21 @@ Goal: nodes discover peers dynamically and converge on member status without a c
 
 ### 2.1 UDP Transport
 
-- [ ] Add UDP socket support to event loop.
-- [ ] Add datagram receive path.
-- [ ] Add datagram send path.
-- [ ] Add UDP frame opcodes for membership messages.
+- [x] Add UDP socket support to event loop.
+- [x] Add datagram receive path.
+- [x] Add datagram send path.
+- [x] Add UDP frame opcodes for membership messages.
+- [x] Add Rust payload codec for membership frames.
 
 ### 2.2 SWIM Protocol
 
-- [ ] Write pure state-machine tests for join handling.
-- [ ] Write pure state-machine tests for direct ping ACK.
+- [x] Write pure state-machine tests for join handling.
+- [x] Write pure state-machine tests for direct ping ACK.
 - [ ] Write pure state-machine tests for indirect ping failure.
-- [ ] Write pure state-machine tests for incarnation conflict resolution.
-- [ ] Implement member map with `Alive`, `Suspect`, `Failed`, and `Left` states.
+- [x] Write pure state-machine tests for incarnation conflict resolution.
+- [x] Implement member map with `Alive`, `Suspect`, `Failed`, and `Left` states.
 - [ ] Implement randomized peer selection.
-- [ ] Implement direct `Ping` and `Ack`.
+- [x] Implement direct `Ping` and `Ack`.
 - [ ] Implement indirect `PingReq`.
 - [ ] Implement piggybacked dissemination queue.
 - [ ] Add operator command or log output to inspect membership.

@@ -14,10 +14,19 @@ fn main() -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         let config = Config::from_env()?;
-        let mut server = AppendServer::bind(config.addr, &config.wal_path)?;
+        let mut server = AppendServer::bind(config.addr, &config.wal_path)?.with_membership(
+            config.node_id.clone(),
+            config.membership_addr,
+            config.join_membership_addrs.clone(),
+        )?;
         println!(
-            "core-engine listening on {} with WAL {}",
+            "core-engine node {} listening on {} with membership {} and WAL {}",
+            config.node_id,
             server.local_addr()?,
+            server
+                .membership_addr()
+                .transpose()?
+                .expect("membership is enabled"),
             config.wal_path.display()
         );
         server.run()
@@ -26,19 +35,30 @@ fn main() -> std::io::Result<()> {
 
 #[cfg(target_os = "macos")]
 struct Config {
+    node_id: String,
     addr: SocketAddr,
+    membership_addr: SocketAddr,
+    join_membership_addrs: Vec<SocketAddr>,
     wal_path: PathBuf,
 }
 
 #[cfg(target_os = "macos")]
 impl Config {
     fn from_env() -> std::io::Result<Self> {
+        let mut node_id = "node-1".to_string();
         let mut addr = "127.0.0.1:7000".parse::<SocketAddr>().unwrap();
+        let mut membership_addr = "127.0.0.1:7100".parse::<SocketAddr>().unwrap();
+        let mut join_membership_addrs = Vec::new();
         let mut wal_path = PathBuf::from("data/node-1.log");
         let mut args = env::args().skip(1);
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--node-id" => {
+                    node_id = args
+                        .next()
+                        .ok_or_else(|| invalid_arg("missing --node-id value"))?;
+                }
                 "--addr" => {
                     let value = args
                         .next()
@@ -46,6 +66,24 @@ impl Config {
                     addr = value
                         .parse()
                         .map_err(|_| invalid_arg("invalid --addr value"))?;
+                }
+                "--membership-addr" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| invalid_arg("missing --membership-addr value"))?;
+                    membership_addr = value
+                        .parse()
+                        .map_err(|_| invalid_arg("invalid --membership-addr value"))?;
+                }
+                "--join" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| invalid_arg("missing --join value"))?;
+                    join_membership_addrs.push(
+                        value
+                            .parse()
+                            .map_err(|_| invalid_arg("invalid --join value"))?,
+                    );
                 }
                 "--wal" => {
                     let value = args
@@ -65,7 +103,13 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
 
-        Ok(Self { addr, wal_path })
+        Ok(Self {
+            node_id,
+            addr,
+            membership_addr,
+            join_membership_addrs,
+            wal_path,
+        })
     }
 }
 
@@ -76,5 +120,7 @@ fn invalid_arg(message: &str) -> std::io::Error {
 
 #[cfg(target_os = "macos")]
 fn print_usage() {
-    println!("usage: core-engine [--addr 127.0.0.1:7000] [--wal data/node-1.log]");
+    println!(
+        "usage: core-engine [--node-id node-1] [--addr 127.0.0.1:7000] [--membership-addr 127.0.0.1:7100] [--join 127.0.0.1:7100] [--wal data/node-1.log]"
+    );
 }

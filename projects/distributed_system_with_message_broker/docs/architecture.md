@@ -15,3 +15,5 @@ Core node modules are intentionally decoupled:
 - `task`: committed task representation and execution handoff.
 
 The Raft state machine must remain testable without sockets, threads, or disk.
+
+The SWIM membership state machine follows the same rule: membership conflict resolution, join handling, probe target selection, and ping/ACK state are pure logic. UDP transport only carries membership messages and should not own membership decisions.

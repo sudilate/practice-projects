@@ -11,6 +11,10 @@ export enum Opcode {
   AckPing = 5,
   RequestVote = 6,
   AppendEntries = 7,
+  Join = 8,
+  JoinAck = 9,
+  PingReq = 10,
+  MembershipUpdate = 11,
 }
 
 export interface Frame {

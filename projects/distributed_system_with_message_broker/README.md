@@ -46,12 +46,16 @@ Run local core nodes:
 ./scripts/run-5-nodes.sh
 ```
 
-The multi-node scripts currently start independent append servers on separate ports and WAL files. SWIM discovery and Raft replication are later phases.
+The multi-node scripts start append servers on separate TCP ports, WAL files, and UDP membership ports. Nodes can exchange SWIM `Join`/`JoinAck` messages through `node-1`; full SWIM dissemination, indirect probes, failure detection, and Raft replication are later phases.
 
 Run one node manually:
 
 ```sh
-cargo run -p core-engine -- --addr 127.0.0.1:7000 --wal data/node-1.log
+cargo run -p core-engine -- \
+  --node-id node-1 \
+  --addr 127.0.0.1:7000 \
+  --membership-addr 127.0.0.1:7100 \
+  --wal data/node-1.log
 ```
 
 Benchmark a running node with 100 concurrent TCP clients:
@@ -66,4 +70,4 @@ Latest local debug-build result on this workspace: `clients=100 successes=100 fa
 
 Phase 0 is complete. Phase 1 has a strict WAL, Rust and TypeScript frame helpers, streaming decoders, max frame-size enforcement, structured error payloads, and a macOS `kqueue` TCP append server. A single Rust node accepts `AppendTask` frames, appends payloads to the WAL, and responds with `Ack` frames.
 
-Phase 1 TCP load validation is complete for 100 concurrent clients. The next implementation phase is SWIM membership: UDP transport, membership message opcodes, and pure membership state-machine tests.
+Phase 1 TCP load validation is complete for 100 concurrent clients. Phase 2 now has UDP datagram transport, Rust membership frame payload codecs, and a minimal SWIM `Join`/`JoinAck` runtime wired into the node loop. The next implementation work is indirect `PingReq`, piggybacked dissemination, randomized probes, and observable membership inspection.
