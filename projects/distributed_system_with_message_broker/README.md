@@ -16,6 +16,42 @@ learning distributed systems primitives from first principles.
 - Raft leader election and log replication implemented from scratch
 - Bun/TypeScript API gateway exposing a developer-friendly HTTP API
 
+## Why this project
+
+Most distributed-systems demos glue together Kafka, Redis, etcd, and a web
+framework. This repo is different: it **implements the hard primitives itself**
+as a teaching stack you can read line by line.
+
+**First-principles core (not library cosplay).** The Rust node deliberately
+avoids the usual shortcuts — no Tokio data path, no off-the-shelf Raft or SWIM
+crate, no database on the log path. Durability is a custom append-only WAL with
+a strict corruption policy; consensus and membership are hand-written state
+machines.
+
+**Real OS networking.** A macOS `kqueue` event loop drives non-blocking TCP with
+per-connection buffers and write queues. Cluster traffic uses a shared
+length-prefixed **binary protocol** in Rust and TypeScript, not HTTP-everywhere
+or gRPC-by-default.
+
+**Full vertical slice.** It does not stop at “elect a leader.” The path is
+`JSON client → Bun gateway → binary frame → Raft commit → worker execute →
+status API`, including leader tracking, not-leader failover, and reconnect
+backoff.
+
+**Lab-operable, not only unit-tested.** Multi-node scripts, a failure matrix
+(killed node/leader, malformed frames, truncated WAL, reconnect), failover
+timing, WAL/Raft/gateway benches, structured logs, metrics, and deploy/security
+notes make it demo-grade and lab-grade.
+
+**Honest pedagogical contract.** Dependency constraints are explicit (see the
+ADR), the roadmap lives in `TASKS.md`, and non-goals are stated up front: no
+TLS/auth, macOS-only core today, compaction planned but not implemented. Depth
+over marketplace completeness.
+
+**One-line pitch:** a from-scratch, kqueue-based distributed task cluster —
+custom WAL + binary protocol + SWIM + Raft + Bun gateway — built to learn
+systems primitives, not to wrap existing infrastructure.
+
 ## Repository Layout
 
 ```text
