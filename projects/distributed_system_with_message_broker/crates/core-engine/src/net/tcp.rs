@@ -281,7 +281,7 @@ fn error_frame(code: u16, message: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::AppendServer;
-    use crate::protocol::{Frame, Opcode};
+    use crate::protocol::{ErrorResponse, Frame, Opcode};
     use crate::storage::Wal;
     use std::fs;
     use std::io::{Read, Write};
@@ -381,6 +381,55 @@ mod tests {
         assert_eq!(wal.len(), CLIENTS);
 
         let _ = fs::remove_file(wal_path);
+    }
+
+    #[test]
+    fn rejects_malformed_frame_with_error_response() {
+        let wal_path = test_wal_path("tcp-malformed");
+        let mut server =
+            AppendServer::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap(), &wal_path)
+                .expect("server binds");
+        let addr = server.local_addr().expect("server addr is available");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+
+        let handle = thread::spawn(move || {
+            server
+                .run_until(&server_shutdown)
+                .expect("server exits cleanly");
+        });
+
+        let mut stream = TcpStream::connect(addr).expect("client connects");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout sets");
+        // length=0, unknown opcode 99
+        stream
+            .write_all(&[0, 0, 0, 0, 99])
+            .expect("malformed frame writes");
+
+        let frame = read_frame(&mut stream);
+        assert_eq!(frame.opcode(), Opcode::Error);
+        let error = ErrorResponse::decode(frame.payload()).expect("error payload decodes");
+        assert_eq!(error.code, 400);
+        assert!(error.message.contains("unknown opcode"));
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().expect("server joins");
+        let _ = fs::remove_file(wal_path);
+    }
+
+    fn read_frame(stream: &mut TcpStream) -> Frame {
+        let mut header = [0; 5];
+        stream.read_exact(&mut header).expect("header reads");
+        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let mut bytes = header.to_vec();
+        if length > 0 {
+            let mut payload = vec![0; length];
+            stream.read_exact(&mut payload).expect("payload reads");
+            bytes.extend_from_slice(&payload);
+        }
+        Frame::decode(&bytes).expect("frame decodes")
     }
 
     fn test_wal_path(name: &str) -> std::path::PathBuf {

@@ -185,15 +185,15 @@ Phase 4 success criteria:
 - [x] Multi-process tests for 5-node Raft election (script).
 - [x] Bun unit tests for protocol.
 - [x] Bun HTTP route tests.
-- [ ] Failure tests for killed node, killed leader, malformed frame, truncated WAL, and reconnect.
+- [x] Failure tests for killed node, killed leader, malformed frame, truncated WAL, and reconnect (`scripts/failure-matrix.sh`, TCP/unit/gateway reconnect tests).
 
 ## 6. Benchmarking
 
-- [ ] Benchmark WAL append throughput.
+- [x] Benchmark WAL append throughput (`scripts/bench-wal.sh` / `wal_benchmark`).
 - [x] Benchmark single-node TCP throughput.
 - [x] Benchmark 100 concurrent client connections.
-- [ ] Benchmark Raft commit latency for 3 and 5 nodes.
-- [ ] Benchmark gateway request latency.
+- [x] Benchmark Raft commit latency for 3 and 5 nodes (`scripts/bench-raft-commit.sh`).
+- [x] Benchmark gateway request latency (`scripts/bench-gateway-latency.sh`).
 
 ## 7. Production Readiness
 
