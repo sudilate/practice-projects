@@ -1,6 +1,7 @@
 use crate::protocol::{Frame, Opcode};
 use crate::raft::{AppendEntries, RaftMessage, RaftState, RequestVote, Role};
 use crate::storage::Wal;
+use crate::task::TaskState;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -46,6 +47,7 @@ pub struct RaftRuntime {
     leader_logged: bool,
     next_index: HashMap<String, u64>,
     match_index: HashMap<String, u64>,
+    task_state: TaskState,
 }
 
 impl RaftRuntime {
@@ -79,6 +81,7 @@ impl RaftRuntime {
             leader_logged: false,
             next_index,
             match_index,
+            task_state: TaskState::new(),
         };
         runtime.reset_election_deadline(now);
         runtime
@@ -101,12 +104,24 @@ impl RaftRuntime {
     }
 
     pub fn tick(&mut self, now: Instant) -> io::Result<()> {
-        match self.state.role() {
+        let result = match self.state.role() {
             Role::Leader => self.send_heartbeats_if_due(now),
             Role::Follower | Role::Candidate if now >= self.election_deadline => {
                 self.start_election(now)
             }
             Role::Follower | Role::Candidate => Ok(()),
+        };
+        self.apply_committed();
+        result
+    }
+
+    pub fn task_state(&self) -> &TaskState {
+        &self.task_state
+    }
+
+    fn apply_committed(&mut self) {
+        for entry in self.state.drain_applied_entries() {
+            self.task_state.apply(entry.task_id, entry.payload);
         }
     }
 
@@ -178,6 +193,7 @@ impl RaftRuntime {
 
         if replicated >= self.majority() {
             self.state.commit_through(entry.index);
+            self.apply_committed();
             eprintln!(
                 "raft {}: committed entry {} with {replicated} replicas",
                 self.node_id, entry.index
@@ -306,6 +322,7 @@ impl RaftRuntime {
                     for entry in entries {
                         wal.append(&entry.payload)?;
                     }
+                    self.apply_committed();
                     self.reset_election_deadline(Instant::now());
                 }
                 self.leader_logged = self.state.role() == Role::Leader;
@@ -408,6 +425,7 @@ mod tests {
     use crate::raft::Role;
     use crate::raft::{AppendEntries, RaftLogEntry, RaftMessage};
     use crate::storage::Wal;
+    use crate::task::TaskStatus;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -506,5 +524,114 @@ mod tests {
             .unwrap_or(Duration::ZERO)
             .as_nanos();
         std::env::temp_dir().join(format!("core-engine-raft-{name}-{nanos}.log"))
+    }
+
+    #[test]
+    fn committed_task_is_applied_to_state_machine() {
+        let config = RaftRuntimeConfig {
+            election_timeout_min: Duration::from_millis(1),
+            election_timeout_spread: Duration::ZERO,
+            heartbeat_interval: Duration::from_millis(50),
+        };
+        let mut runtime = RaftRuntime::new_with_config("node-a".to_string(), Vec::new(), config);
+        runtime
+            .tick(Instant::now() + Duration::from_millis(2))
+            .expect("leader elected");
+        let wal_path = test_wal_path("sm-apply");
+        let mut wal = Wal::open(&wal_path).expect("wal opens");
+
+        assert!(runtime
+            .submit_task(b"payload", &mut wal)
+            .expect("task submits"));
+
+        let task = runtime
+            .task_state()
+            .get("node-a-1")
+            .expect("task was applied");
+        assert_eq!(task.payload, b"payload");
+        assert_eq!(task.status, TaskStatus::Pending);
+        let _ = fs::remove_file(wal_path);
+    }
+
+    #[test]
+    fn follower_applies_committed_entries_from_heartbeat() {
+        let mut runtime = RaftRuntime::new("node-b".to_string(), Vec::new());
+        let wal_path = test_wal_path("sm-follower");
+        let mut wal = Wal::open(&wal_path).expect("wal opens");
+        let request = AppendEntries {
+            term: 1,
+            leader_id: "node-a".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![RaftLogEntry {
+                term: 1,
+                index: 1,
+                task_id: "task-1".to_string(),
+                payload: b"replicated".to_vec(),
+            }],
+            leader_commit: 1,
+        };
+        let payload = RaftMessage::AppendEntries(request)
+            .encode_append_entries_family()
+            .expect("append entries encodes");
+
+        runtime
+            .handle_frame(Opcode::AppendEntries, &payload, &mut wal)
+            .expect("append entries handled");
+
+        let task = runtime
+            .task_state()
+            .get("task-1")
+            .expect("task was applied");
+        assert_eq!(task.payload, b"replicated");
+        assert_eq!(task.status, TaskStatus::Pending);
+        let _ = fs::remove_file(wal_path);
+    }
+
+    #[test]
+    fn partitioned_follower_catches_up_after_receiving_missing_entries() {
+        let mut runtime = RaftRuntime::new("node-b".to_string(), Vec::new());
+        // Seed the follower with entry 1 but leave it uncommitted.
+        runtime
+            .state
+            .append_local_entry(1, "task-1".to_string(), b"one".to_vec());
+        // The leader now sends entries 2 and 3 with prev_log_index=1.
+        let wal_path = test_wal_path("sm-catchup");
+        let mut wal = Wal::open(&wal_path).expect("wal opens");
+        let request = AppendEntries {
+            term: 1,
+            leader_id: "node-a".to_string(),
+            prev_log_index: 1,
+            prev_log_term: 1,
+            entries: vec![
+                RaftLogEntry {
+                    term: 1,
+                    index: 2,
+                    task_id: "task-2".to_string(),
+                    payload: b"two".to_vec(),
+                },
+                RaftLogEntry {
+                    term: 1,
+                    index: 3,
+                    task_id: "task-3".to_string(),
+                    payload: b"three".to_vec(),
+                },
+            ],
+            leader_commit: 2,
+        };
+        let payload = RaftMessage::AppendEntries(request)
+            .encode_append_entries_family()
+            .expect("append entries encodes");
+
+        runtime
+            .handle_frame(Opcode::AppendEntries, &payload, &mut wal)
+            .expect("append entries handled");
+
+        assert_eq!(runtime.commit_index(), 2);
+        assert_eq!(runtime.last_log_index(), 3);
+        assert!(runtime.task_state().get("task-1").is_some());
+        assert!(runtime.task_state().get("task-2").is_some());
+        assert!(runtime.task_state().get("task-3").is_none());
+        let _ = fs::remove_file(wal_path);
     }
 }

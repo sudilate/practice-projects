@@ -186,6 +186,25 @@ impl RaftState {
         self.commit_index = index.min(self.last_log_index());
     }
 
+    /// Return all committed entries that have not yet been applied and advance
+    /// `last_applied` up to `commit_index`. The caller is responsible for
+    /// feeding these entries into the application state machine.
+    pub fn drain_applied_entries(&mut self) -> Vec<RaftLogEntry> {
+        let mut applied = Vec::new();
+        while self.last_applied < self.commit_index {
+            self.last_applied += 1;
+            if let Some(entry) = self
+                .log
+                .iter()
+                .find(|e| e.index == self.last_applied)
+                .cloned()
+            {
+                applied.push(entry);
+            }
+        }
+        applied
+    }
+
     pub fn handle_request_vote(&mut self, request: RequestVote) -> RequestVoteReply {
         if request.term < self.current_term {
             return RequestVoteReply {
@@ -877,6 +896,29 @@ mod tests {
             AppendEntries::decode(&[0, 1, 2]),
             Err(RaftCodecError::InvalidPayload)
         );
+    }
+
+    #[test]
+    fn drain_applied_entries_returns_committed_not_yet_applied() {
+        let mut state = state_with_entries(&[(1, "task-a"), (1, "task-b"), (1, "task-c")]);
+        assert_eq!(state.commit_index(), 0);
+        assert_eq!(state.last_applied(), 0);
+
+        let applied = state.drain_applied_entries();
+        assert!(applied.is_empty());
+
+        state.commit_through(2);
+        let applied = state.drain_applied_entries();
+        assert_eq!(applied.len(), 2);
+        assert_eq!(applied[0].task_id, "task-a");
+        assert_eq!(applied[1].task_id, "task-b");
+        assert_eq!(state.last_applied(), 2);
+
+        state.commit_through(3);
+        let applied = state.drain_applied_entries();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].task_id, "task-c");
+        assert_eq!(state.last_applied(), 3);
     }
 
     fn state_with_entries(entries: &[(u64, &str)]) -> RaftState {

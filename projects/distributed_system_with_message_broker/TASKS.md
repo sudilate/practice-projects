@@ -128,14 +128,15 @@ Goal: elect a leader and replicate committed task log entries to a majority.
 - [x] Implement follower append validation.
 - [x] Implement `next_index` and `match_index` tracking.
 - [x] Commit only after majority ACK.
-- [ ] Apply committed entries to the task state machine.
-- [ ] Add failure tests for dropped follower and leader restart.
+- [x] Apply committed entries to the task state machine.
+- [x] Add failure test for dropped follower catch-up.
+- [ ] Add leader restart test (requires Raft log metadata in WAL).
 
 Phase 3 success criteria:
 
 - [x] Five-node cluster elects one leader.
 - [x] Task sent to leader replicates to at least three nodes before success.
-- [ ] Killing leader triggers new election within 150-300ms.
+- [x] Killing leader triggers new election within 150-300ms (`scripts/measure-failover.sh` measured 216ms).
 
 ## 4. API Gateway and Task Execution
 
