@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 pub mod kqueue;
 #[cfg(target_os = "macos")]
+pub mod raft;
+#[cfg(target_os = "macos")]
 pub mod swim;
 #[cfg(target_os = "macos")]
 pub mod tcp;

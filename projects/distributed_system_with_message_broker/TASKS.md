@@ -81,21 +81,21 @@ Goal: nodes discover peers dynamically and converge on member status without a c
 
 - [x] Write pure state-machine tests for join handling.
 - [x] Write pure state-machine tests for direct ping ACK.
-- [ ] Write pure state-machine tests for indirect ping failure.
+- [x] Write pure state-machine tests for indirect ping failure.
 - [x] Write pure state-machine tests for incarnation conflict resolution.
 - [x] Implement member map with `Alive`, `Suspect`, `Failed`, and `Left` states.
 - [x] Implement runtime direct probe loop with local suspect and failed transitions.
-- [ ] Implement randomized peer selection.
+- [x] Implement randomized peer selection.
 - [x] Implement direct `Ping` and `Ack`.
-- [ ] Implement indirect `PingReq`.
+- [x] Implement indirect `PingReq`.
 - [x] Implement piggybacked dissemination queue.
-- [ ] Add operator command or log output to inspect membership.
+- [x] Add operator command or log output to inspect membership.
 
 Phase 2 success criteria:
 
-- [ ] Three Rust binaries on separate ports discover each other.
-- [ ] Each node maintains an accurate shared active-member map.
-- [ ] Killing one node updates remaining maps within seconds.
+- [x] Three Rust binaries on separate ports discover each other.
+- [x] Each node maintains an accurate shared active-member map.
+- [x] Killing one node updates remaining maps within seconds.
 
 ## 3. Consensus Layer with Raft
 
@@ -103,38 +103,38 @@ Goal: elect a leader and replicate committed task log entries to a majority.
 
 ### 3.1 State Machine and RPCs
 
-- [ ] Write tests for follower initial state.
+- [x] Write tests for follower initial state.
 - [x] Write test for follower starting an election.
-- [ ] Write tests for vote granting and rejection.
-- [ ] Write tests for stale term rejection.
-- [ ] Write tests for AppendEntries heartbeat handling.
-- [ ] Write tests for log consistency checks.
-- [ ] Define `RequestVote` binary payload.
-- [ ] Define `AppendEntries` binary payload.
-- [ ] Keep Raft state machine independent from network I/O.
+- [x] Write tests for vote granting and rejection.
+- [x] Write tests for stale term rejection.
+- [x] Write tests for AppendEntries heartbeat handling.
+- [x] Write tests for log consistency checks.
+- [x] Define `RequestVote` binary payload.
+- [x] Define `AppendEntries` binary payload.
+- [x] Keep Raft state machine independent from network I/O.
 
 ### 3.2 Leader Election
 
-- [ ] Implement randomized election timeouts.
-- [ ] Implement candidate vote requests.
-- [ ] Implement majority vote calculation.
-- [ ] Implement candidate-to-leader transition.
-- [ ] Implement leader heartbeat loop.
-- [ ] Implement demotion on higher term.
+- [x] Implement randomized election timeouts.
+- [x] Implement candidate vote requests.
+- [x] Implement majority vote calculation.
+- [x] Implement candidate-to-leader transition.
+- [x] Implement leader heartbeat loop.
+- [x] Implement demotion on higher term.
 
 ### 3.3 Log Replication
 
-- [ ] Implement leader append to local WAL.
-- [ ] Implement follower append validation.
-- [ ] Implement `next_index` and `match_index` tracking.
-- [ ] Commit only after majority ACK.
+- [x] Implement leader append to local WAL.
+- [x] Implement follower append validation.
+- [x] Implement `next_index` and `match_index` tracking.
+- [x] Commit only after majority ACK.
 - [ ] Apply committed entries to the task state machine.
 - [ ] Add failure tests for dropped follower and leader restart.
 
 Phase 3 success criteria:
 
-- [ ] Five-node cluster elects one leader.
-- [ ] Task sent to leader replicates to at least three nodes before success.
+- [x] Five-node cluster elects one leader.
+- [x] Task sent to leader replicates to at least three nodes before success.
 - [ ] Killing leader triggers new election within 150-300ms.
 
 ## 4. API Gateway and Task Execution

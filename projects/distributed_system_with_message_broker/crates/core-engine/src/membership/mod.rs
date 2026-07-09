@@ -151,7 +151,7 @@ pub struct SwimState {
     local_id: String,
     members: MembershipMap,
     pending_ping: Option<PendingPing>,
-    probe_cursor: usize,
+    rng_state: u64,
 }
 
 impl SwimState {
@@ -166,11 +166,18 @@ impl SwimState {
         members.insert(local_id.clone(), local);
 
         Self {
+            rng_state: seed_from(&local_id, local_addr),
             local_id,
             members,
             pending_ping: None,
-            probe_cursor: 0,
         }
+    }
+
+    #[cfg(test)]
+    fn new_with_seed(local_id: String, local_addr: SocketAddr, rng_state: u64) -> Self {
+        let mut state = Self::new(local_id, local_addr);
+        state.rng_state = rng_state.max(1);
+        state
     }
 
     pub fn local_id(&self) -> &str {
@@ -221,9 +228,8 @@ impl SwimState {
             return None;
         }
 
-        let target = candidates[self.probe_cursor % candidates.len()].clone();
-        self.probe_cursor = (self.probe_cursor + 1) % candidates.len();
-        Some(target)
+        let index = self.next_random_index(candidates.len());
+        Some(candidates[index].clone())
     }
 
     pub fn start_direct_ping(&mut self, target: String) -> Option<MembershipMessage> {
@@ -238,6 +244,35 @@ impl SwimState {
             from: self.local_id.clone(),
             target,
         })
+    }
+
+    pub fn start_indirect_ping(&self, target: String, relay: String) -> Option<MembershipMessage> {
+        if !self.is_probeable(&target) || !self.is_probeable(&relay) || target == relay {
+            return None;
+        }
+
+        Some(MembershipMessage::PingReq {
+            from: self.local_id.clone(),
+            target,
+            relay,
+        })
+    }
+
+    pub fn indirect_ping_relays(&mut self, target: &str, limit: usize) -> Vec<String> {
+        let mut relays: Vec<_> = self
+            .members
+            .values()
+            .filter(|member| {
+                member.id != self.local_id
+                    && member.id != target
+                    && member.status != MemberStatus::Failed
+            })
+            .map(|member| member.id.clone())
+            .collect();
+        relays.sort();
+        self.shuffle(&mut relays);
+        relays.truncate(limit);
+        relays
     }
 
     pub fn handle_ack(&mut self, from: &str) -> bool {
@@ -291,6 +326,41 @@ impl SwimState {
             member.id != self.local_id && member.status != MemberStatus::Failed
         })
     }
+
+    fn shuffle(&mut self, values: &mut [String]) {
+        for index in (1..values.len()).rev() {
+            let swap_index = self.next_random_index(index + 1);
+            values.swap(index, swap_index);
+        }
+    }
+
+    fn next_random_index(&mut self, upper_bound: usize) -> usize {
+        debug_assert!(upper_bound > 0);
+        (self.next_random_u64() as usize) % upper_bound
+    }
+
+    fn next_random_u64(&mut self) -> u64 {
+        let mut value = self.rng_state;
+        value ^= value << 13;
+        value ^= value >> 7;
+        value ^= value << 17;
+        self.rng_state = value.max(1);
+        self.rng_state
+    }
+}
+
+fn seed_from(local_id: &str, local_addr: SocketAddr) -> u64 {
+    let mut seed = 0xcbf29ce484222325_u64;
+    for byte in local_id
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain(local_addr.to_string().bytes())
+    {
+        seed ^= u64::from(byte);
+        seed = seed.wrapping_mul(0x100000001b3);
+    }
+    seed.max(1)
 }
 
 fn is_stale_update(existing: &Member, update: &Member) -> bool {
@@ -542,6 +612,80 @@ mod tests {
         assert_eq!(state.pending_ping().unwrap().target, "node-b");
         assert!(state.handle_ack("node-b"));
         assert!(state.pending_ping().is_none());
+    }
+
+    #[test]
+    fn indirect_ping_req_uses_probeable_relay() {
+        let mut state = state("node-a");
+        state.apply_update(member("node-b", 7101, MemberStatus::Alive, 0));
+        state.apply_update(member("node-c", 7102, MemberStatus::Alive, 0));
+
+        let message = state.start_indirect_ping("node-b".to_string(), "node-c".to_string());
+
+        assert_eq!(
+            message,
+            Some(MembershipMessage::PingReq {
+                from: "node-a".to_string(),
+                target: "node-b".to_string(),
+                relay: "node-c".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn indirect_ping_relays_exclude_target_self_and_failed_members() {
+        let mut state = state("node-a");
+        state.apply_update(member("node-b", 7101, MemberStatus::Alive, 0));
+        state.apply_update(member("node-c", 7102, MemberStatus::Alive, 0));
+        state.apply_update(member("node-d", 7103, MemberStatus::Failed, 0));
+        state.apply_update(member("node-e", 7104, MemberStatus::Alive, 0));
+
+        let relays = state.indirect_ping_relays("node-b", 3);
+
+        assert_eq!(relays.len(), 2);
+        assert!(relays.contains(&"node-c".to_string()));
+        assert!(relays.contains(&"node-e".to_string()));
+    }
+
+    #[test]
+    fn probe_target_selection_uses_seeded_randomness() {
+        let mut state = SwimState::new_with_seed("node-a".to_string(), addr(7100), 1);
+        state.apply_update(member("node-b", 7101, MemberStatus::Alive, 0));
+        state.apply_update(member("node-c", 7102, MemberStatus::Alive, 0));
+        state.apply_update(member("node-d", 7103, MemberStatus::Alive, 0));
+
+        let selected: Vec<_> = (0..6)
+            .map(|_| state.next_probe_target().expect("target selected"))
+            .collect();
+
+        assert_ne!(
+            selected,
+            vec![
+                "node-b".to_string(),
+                "node-c".to_string(),
+                "node-d".to_string(),
+                "node-b".to_string(),
+                "node-c".to_string(),
+                "node-d".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn indirect_ping_req_rejects_failed_target_and_failed_relay() {
+        let mut state = state("node-a");
+        state.apply_update(member("node-b", 7101, MemberStatus::Failed, 0));
+        state.apply_update(member("node-c", 7102, MemberStatus::Alive, 0));
+        state.apply_update(member("node-d", 7103, MemberStatus::Failed, 0));
+
+        assert_eq!(
+            state.start_indirect_ping("node-b".to_string(), "node-c".to_string()),
+            None
+        );
+        assert_eq!(
+            state.start_indirect_ping("node-c".to_string(), "node-d".to_string()),
+            None
+        );
     }
 
     #[test]

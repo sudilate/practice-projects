@@ -1,4 +1,5 @@
 use crate::net::kqueue::{EventFilter, Kqueue};
+use crate::net::raft::{RaftPeer, RaftRuntime};
 use crate::net::swim::MembershipRuntime;
 use crate::protocol::{ErrorResponse, Frame, Opcode, StreamingDecoder};
 use crate::storage::Wal;
@@ -14,6 +15,7 @@ pub struct AppendServer {
     listener: TcpListener,
     wal: Wal,
     membership: Option<MembershipRuntime>,
+    raft: Option<RaftRuntime>,
 }
 
 impl AppendServer {
@@ -25,6 +27,7 @@ impl AppendServer {
             listener,
             wal: Wal::open(wal_path)?,
             membership: None,
+            raft: None,
         })
     }
 
@@ -42,6 +45,11 @@ impl AppendServer {
         membership.send_join_requests(&join_peers)?;
         self.membership = Some(membership);
         Ok(self)
+    }
+
+    pub fn with_raft(mut self, node_id: String, peers: Vec<RaftPeer>) -> Self {
+        self.raft = Some(RaftRuntime::new(node_id, peers));
+        self
     }
 
     pub fn membership_addr(&self) -> Option<io::Result<SocketAddr>> {
@@ -80,6 +88,9 @@ impl AppendServer {
             }
             if let Some(membership) = self.membership.as_mut() {
                 membership.tick(Instant::now())?;
+            }
+            if let Some(raft) = self.raft.as_mut() {
+                raft.tick(Instant::now())?;
             }
         }
 
@@ -125,9 +136,11 @@ impl AppendServer {
                 Ok(read) => match connection.decoder.push(&buffer[..read]) {
                     Ok(frames) => {
                         for frame in frames {
-                            connection
-                                .write_queue
-                                .push_back(handle_frame(&mut self.wal, frame));
+                            connection.write_queue.push_back(handle_frame(
+                                &mut self.wal,
+                                self.raft.as_mut(),
+                                frame,
+                            ));
                         }
                         if !connection.write_queue.is_empty() {
                             kqueue.register_write(fd)?;
@@ -203,14 +216,33 @@ fn write_ready(
     Ok(())
 }
 
-fn handle_frame(wal: &mut Wal, frame: Frame) -> Vec<u8> {
+fn handle_frame(wal: &mut Wal, raft: Option<&mut RaftRuntime>, frame: Frame) -> Vec<u8> {
     match frame.opcode() {
-        Opcode::AppendTask => match wal.append(frame.payload()) {
-            Ok(_) => Frame::new(Opcode::Ack, Vec::new())
-                .encode()
-                .expect("ACK frame encodes"),
-            Err(error) => error_frame(500, &error.to_string()),
-        },
+        Opcode::AppendTask => {
+            if let Some(raft) = raft {
+                return match raft.submit_task(frame.payload(), wal) {
+                    Ok(true) => Frame::new(Opcode::Ack, Vec::new())
+                        .encode()
+                        .expect("ACK frame encodes"),
+                    Ok(false) => error_frame(409, "not raft leader or replication failed"),
+                    Err(error) => error_frame(500, &error.to_string()),
+                };
+            }
+
+            match wal.append(frame.payload()) {
+                Ok(_) => Frame::new(Opcode::Ack, Vec::new())
+                    .encode()
+                    .expect("ACK frame encodes"),
+                Err(error) => error_frame(500, &error.to_string()),
+            }
+        }
+        Opcode::RequestVote | Opcode::AppendEntries => {
+            let Some(raft) = raft else {
+                return error_frame(503, "raft runtime is not enabled");
+            };
+            raft.handle_frame(frame.opcode(), frame.payload(), wal)
+                .unwrap_or_else(|error| error_frame(400, &error.to_string()))
+        }
         opcode => error_frame(400, &format!("unsupported opcode: {opcode:?}")),
     }
 }

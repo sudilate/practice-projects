@@ -1,4 +1,4 @@
-use crate::membership::{Member, MembershipMessage, SwimState, UpdateOutcome};
+use crate::membership::{Member, MemberStatus, MembershipMessage, SwimState, UpdateOutcome};
 use crate::net::kqueue::Kqueue;
 use crate::net::udp::UdpTransport;
 use crate::protocol::Frame;
@@ -13,6 +13,8 @@ const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const DEFAULT_SUSPECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_PIGGYBACK_LIMIT: usize = 4;
 const DEFAULT_DISSEMINATION_TRANSMISSIONS: usize = 4;
+const DEFAULT_INDIRECT_PROBE_COUNT: usize = 3;
+const DEFAULT_INSPECTION_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MembershipConfig {
@@ -21,6 +23,8 @@ pub struct MembershipConfig {
     pub suspect_timeout: Duration,
     pub piggyback_limit: usize,
     pub dissemination_transmissions: usize,
+    pub indirect_probe_count: usize,
+    pub inspection_log_interval: Option<Duration>,
 }
 
 impl Default for MembershipConfig {
@@ -31,8 +35,16 @@ impl Default for MembershipConfig {
             suspect_timeout: DEFAULT_SUSPECT_TIMEOUT,
             piggyback_limit: DEFAULT_PIGGYBACK_LIMIT,
             dissemination_transmissions: DEFAULT_DISSEMINATION_TRANSMISSIONS,
+            indirect_probe_count: DEFAULT_INDIRECT_PROBE_COUNT,
+            inspection_log_interval: Some(DEFAULT_INSPECTION_LOG_INTERVAL),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbePhase {
+    Direct,
+    Indirect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,8 +60,10 @@ pub struct MembershipRuntime {
     config: MembershipConfig,
     last_probe_at: Instant,
     probe_started_at: Option<Instant>,
+    probe_phase: Option<ProbePhase>,
     suspect_marked_at: HashMap<String, Instant>,
     dissemination_queue: VecDeque<DisseminationUpdate>,
+    last_inspection_log_at: Instant,
 }
 
 impl MembershipRuntime {
@@ -70,8 +84,10 @@ impl MembershipRuntime {
             config,
             last_probe_at: Instant::now(),
             probe_started_at: None,
+            probe_phase: None,
             suspect_marked_at: HashMap::new(),
             dissemination_queue: VecDeque::new(),
+            last_inspection_log_at: Instant::now(),
         })
     }
 
@@ -111,29 +127,107 @@ impl MembershipRuntime {
     }
 
     pub fn tick(&mut self, now: Instant) -> io::Result<()> {
-        let probe_timed_out = self.mark_timed_out_probe_suspect(now);
+        let probe_timed_out = self.handle_timed_out_probe(now)?;
         self.mark_timed_out_suspects_failed(now);
-        if probe_timed_out {
+        let result = if probe_timed_out {
             Ok(())
         } else {
             self.start_probe_if_due(now)
+        };
+        self.log_membership_if_due(now);
+        result
+    }
+
+    pub fn membership_summary(&self) -> String {
+        let mut members: Vec<_> = self.state.members().values().collect();
+        members.sort_by(|left, right| left.id.cmp(&right.id));
+        members
+            .into_iter()
+            .map(|member| {
+                format!(
+                    "{}={}@{}",
+                    member.id,
+                    status_label(member.status),
+                    member.incarnation
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn log_membership_if_due(&mut self, now: Instant) {
+        let Some(interval) = self.config.inspection_log_interval else {
+            return;
+        };
+        if now.duration_since(self.last_inspection_log_at) < interval {
+            return;
+        }
+
+        self.last_inspection_log_at = now;
+        eprintln!(
+            "membership {}: {}",
+            self.state.local_id(),
+            self.membership_summary()
+        );
+    }
+
+    fn handle_timed_out_probe(&mut self, now: Instant) -> io::Result<bool> {
+        let Some(started_at) = self.probe_started_at else {
+            return Ok(false);
+        };
+        if now.duration_since(started_at) < self.config.probe_timeout {
+            return Ok(false);
+        }
+
+        match self.probe_phase {
+            Some(ProbePhase::Direct) => self.start_indirect_probe(now),
+            Some(ProbePhase::Indirect) => {
+                self.mark_pending_probe_suspect(now);
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 
-    fn mark_timed_out_probe_suspect(&mut self, now: Instant) -> bool {
-        let Some(started_at) = self.probe_started_at else {
-            return false;
+    fn start_indirect_probe(&mut self, now: Instant) -> io::Result<bool> {
+        let Some(target) = self
+            .state
+            .pending_ping()
+            .map(|pending| pending.target.clone())
+        else {
+            self.probe_started_at = None;
+            self.probe_phase = None;
+            return Ok(false);
         };
-        if now.duration_since(started_at) < self.config.probe_timeout {
-            return false;
+        let relays = self
+            .state
+            .indirect_ping_relays(&target, self.config.indirect_probe_count);
+        if relays.is_empty() {
+            self.mark_pending_probe_suspect(now);
+            return Ok(true);
         }
 
+        for relay in relays {
+            let Some(relay_addr) = self.state.member(&relay).map(|member| member.addr) else {
+                continue;
+            };
+            let Some(message) = self.state.start_indirect_ping(target.clone(), relay) else {
+                continue;
+            };
+            self.send_message(relay_addr, &message)?;
+        }
+        self.probe_started_at = Some(now);
+        self.probe_phase = Some(ProbePhase::Indirect);
+        Ok(true)
+    }
+
+    fn mark_pending_probe_suspect(&mut self, now: Instant) {
         self.probe_started_at = None;
+        self.probe_phase = None;
         if let Some(member) = self.state.mark_pending_ping_suspect() {
             self.suspect_marked_at.insert(member.id.clone(), now);
             self.queue_update(member);
         }
-        true
     }
 
     fn mark_timed_out_suspects_failed(&mut self, now: Instant) {
@@ -173,6 +267,7 @@ impl MembershipRuntime {
 
         self.send_message(target_addr, &message)?;
         self.probe_started_at = Some(now);
+        self.probe_phase = Some(ProbePhase::Direct);
         Ok(())
     }
 
@@ -215,11 +310,21 @@ impl MembershipRuntime {
             MembershipMessage::Ack { from, target } if target == self.state.local_id() => {
                 if self.state.handle_ack(&from) {
                     self.probe_started_at = None;
+                    self.probe_phase = None;
                     self.suspect_marked_at.remove(&from);
                 }
             }
             MembershipMessage::Update(member) => {
                 self.apply_remote_update(member);
+            }
+            MembershipMessage::PingReq {
+                from,
+                target,
+                relay,
+            } if relay == self.state.local_id() => {
+                if let Some(target_addr) = self.state.member(&target).map(|member| member.addr) {
+                    self.send_message(target_addr, &MembershipMessage::Ping { from, target })?;
+                }
             }
             MembershipMessage::PingReq { .. }
             | MembershipMessage::Ping { .. }
@@ -290,10 +395,19 @@ fn invalid_data(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
+fn status_label(status: MemberStatus) -> &'static str {
+    match status {
+        MemberStatus::Alive => "Alive",
+        MemberStatus::Suspect => "Suspect",
+        MemberStatus::Failed => "Failed",
+        MemberStatus::Left => "Left",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MembershipConfig, MembershipRuntime};
-    use crate::membership::MemberStatus;
+    use crate::membership::{MemberStatus, MembershipMessage};
     use std::net::SocketAddr;
     use std::time::{Duration, Instant};
 
@@ -373,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_member_update_is_piggybacked_to_another_node() {
+    fn indirect_ping_ack_prevents_suspicion() {
         let config = test_config();
         let mut node_a = MembershipRuntime::bind_with_config("node-a".to_string(), addr(0), config)
             .expect("a binds");
@@ -386,13 +500,53 @@ mod tests {
         eventually(|| node_c.members().contains_key("node-b"));
         let probe_started = Instant::now() + config.probe_interval;
 
-        node_a.tick(probe_started).expect("a probes b");
+        node_a.tick(probe_started).expect("a directly probes b");
         node_a
             .tick(probe_started + config.probe_timeout)
-            .expect("b becomes suspect");
+            .expect("a asks c to ping b");
+
+        eventually(|| {
+            node_c.receive_ready().expect("c receives ping-req");
+            node_b.receive_ready().expect("b receives relayed ping");
+            node_a.receive_ready().expect("a receives indirect ack");
+            node_a.state.pending_ping().is_none()
+        });
+
         node_a
-            .tick(probe_started + config.probe_timeout + config.suspect_timeout)
-            .expect("b becomes failed and a probes c");
+            .tick(probe_started + config.probe_timeout + config.probe_timeout)
+            .expect("indirect timeout passes after ack");
+
+        assert_eq!(
+            node_a.members().get("node-b").unwrap().status,
+            MemberStatus::Alive
+        );
+    }
+
+    #[test]
+    fn failed_member_update_is_piggybacked_to_another_node() {
+        let config = test_config();
+        let mut node_a = MembershipRuntime::bind_with_config("node-a".to_string(), addr(0), config)
+            .expect("a binds");
+        let mut node_b = MembershipRuntime::bind_with_config("node-b".to_string(), addr(0), config)
+            .expect("b binds");
+        let mut node_c = MembershipRuntime::bind_with_config("node-c".to_string(), addr(0), config)
+            .expect("c binds");
+        join_nodes(&mut node_a, &mut node_b);
+        join_nodes(&mut node_a, &mut node_c);
+        eventually(|| node_c.members().contains_key("node-b"));
+        let failed = node_a.state.mark_failed("node-b").expect("b is failed");
+        node_a.queue_update(failed);
+        let node_c_addr = node_c.local_addr().expect("c addr is available");
+
+        node_a
+            .send_message(
+                node_c_addr,
+                &MembershipMessage::Ping {
+                    from: "node-a".to_string(),
+                    target: "node-c".to_string(),
+                },
+            )
+            .expect("ping with piggyback sends");
 
         eventually(|| {
             node_c
@@ -403,6 +557,21 @@ mod tests {
                 .get("node-b")
                 .is_some_and(|member| member.status == MemberStatus::Failed)
         });
+    }
+
+    #[test]
+    fn membership_summary_lists_members_in_stable_order() {
+        let config = test_config();
+        let mut node_a = MembershipRuntime::bind_with_config("node-a".to_string(), addr(0), config)
+            .expect("a binds");
+        let mut node_b = MembershipRuntime::bind_with_config("node-b".to_string(), addr(0), config)
+            .expect("b binds");
+        join_nodes(&mut node_a, &mut node_b);
+
+        let summary = node_a.membership_summary();
+
+        assert!(summary.starts_with("node-a=Alive@0"));
+        assert!(summary.contains("node-b=Alive@0"));
     }
 
     fn join_nodes(node_a: &mut MembershipRuntime, node_b: &mut MembershipRuntime) {
@@ -428,6 +597,8 @@ mod tests {
             suspect_timeout: Duration::from_millis(100),
             piggyback_limit: 4,
             dissemination_transmissions: 4,
+            indirect_probe_count: 3,
+            inspection_log_interval: None,
         }
     }
 

@@ -63,6 +63,23 @@ Message payloads:
 
 Membership update dissemination is piggybacked by sending a bounded batch of `MembershipUpdate` frames alongside other outgoing membership traffic. The runtime coalesces queued updates by member ID so the newest known status is retransmitted instead of stale intermediate states.
 
+On a direct probe timeout, the runtime sends `PingReq` to bounded relay nodes before marking the target suspect. A relay forwards `Ping` to the target on behalf of the requester; an `AckPing` from the target to the requester clears the pending probe.
+
+## Raft Payloads
+
+Raft RPC payloads use big-endian integers and length-prefixed strings with `[length:u16_be][utf8:N]`. The `RequestVote` opcode carries a one-byte family kind followed by either `RequestVote` (`1`) or `RequestVoteReply` (`2`). The `AppendEntries` opcode carries a one-byte family kind followed by either `AppendEntries` (`1`) or `AppendEntriesReply` (`2`).
+
+- `RequestVote`: `[term:u64_be][candidate_id:string][last_log_index:u64_be][last_log_term:u64_be]`
+- `RequestVoteReply`: `[term:u64_be][vote_granted:u8]`
+- `AppendEntries`: `[term:u64_be][leader_id:string][prev_log_index:u64_be][prev_log_term:u64_be][leader_commit:u64_be][entry_count:u16_be][entry repeated count]`
+- `AppendEntriesReply`: `[term:u64_be][success:u8][match_index:u64_be]`
+
+Raft log entry payload shape:
+
+```text
+[term:u64_be][index:u64_be][task_id:string][payload_length:u32_be][payload:N]
+```
+
 ## Streaming Decode
 
 Rust and TypeScript both include streaming decoders that retain partial bytes until a complete frame is available. Multiple frames coalesced in one socket read are emitted in order.
