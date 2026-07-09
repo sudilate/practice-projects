@@ -1,44 +1,54 @@
 # Distributed Task Orchestrator and Message Broker
 
-Fault-tolerant distributed task orchestrator and message broker built for learning distributed systems primitives from first principles.
+Fault-tolerant distributed task orchestrator and message broker built for
+learning distributed systems primitives from first principles.
+
+> **Platform note:** the Rust core engine uses macOS `kqueue` and currently runs
+> only on macOS. CI and local core-node scripts assume macOS. The Bun gateway
+> runs anywhere Bun is supported.
 
 ## Goals
 
-- Rust core engine with raw `std::net`, manual event management, and macOS `kqueue` polling.
-- Custom append-only WAL for durable task and consensus logs.
-- Custom binary protocol for node-to-node and gateway-to-node traffic.
-- SWIM-style cluster membership without a central registry.
-- Raft leader election and log replication implemented from scratch.
-- Bun and TypeScript API gateway exposing a developer-friendly HTTP API.
+- Rust core engine with raw `std::net`, manual event management, and macOS `kqueue` polling
+- Custom append-only WAL for durable task and consensus logs
+- Custom binary protocol for node-to-node and gateway-to-node traffic
+- SWIM-style cluster membership without a central registry
+- Raft leader election and log replication implemented from scratch
+- Bun/TypeScript API gateway exposing a developer-friendly HTTP API
 
 ## Repository Layout
 
 ```text
 crates/core-engine/    Rust cluster node engine
 gateway/               Bun/Fastify API gateway
-docs/                  Architecture and protocol notes
+docs/                  Architecture, protocol, ops notes
+scripts/               Local cluster, e2e, failure, and benchmark scripts
 TASKS.md               Phase-by-phase execution plan
 ```
 
-## Commands
-
-Run Rust checks:
+## Quickstart (macOS)
 
 ```sh
+# Rust checks
 cargo fmt --check
 cargo test
+
+# Gateway checks
+cd gateway && bun install && bun test && bun run typecheck && cd ..
+
+# One node + gateway e2e
+./scripts/e2e-gateway.sh
 ```
 
-Run gateway checks:
+Submit a task against a running gateway:
 
 ```sh
-cd gateway
-bun install
-bun test
-bun run typecheck
+curl -s -X POST http://127.0.0.1:3000/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"uppercase","payload":"hello"}'
 ```
 
-Run local core nodes:
+## Local Clusters
 
 ```sh
 ./scripts/run-1-node.sh
@@ -46,68 +56,89 @@ Run local core nodes:
 ./scripts/run-5-nodes.sh
 ```
 
-The multi-node scripts start append servers on separate TCP ports, WAL files, and UDP membership ports. Nodes can exchange SWIM `Join`/`JoinAck` messages through `node-1`; full SWIM dissemination, indirect probes, failure detection, and Raft replication are later phases.
-
-Measure leader failover latency:
-
-```sh
-./scripts/measure-failover.sh
-```
-
-The script starts a five-node cluster, waits for a leader, kills it, and reports the time until a new leader is elected.
-
-Run the gateway end-to-end smoke test against a single Rust node:
-
-```sh
-./scripts/e2e-gateway.sh
-```
-
-The script starts a Rust node and the Bun gateway, submits a task via `POST /tasks`, and polls `GET /tasks/:id` until the worker result is available.
-
-Run one node manually:
+Manual single node:
 
 ```sh
 cargo run -p core-engine -- \
   --node-id node-1 \
   --addr 127.0.0.1:7000 \
   --membership-addr 127.0.0.1:7100 \
-  --wal data/node-1.log
+  --data-dir data/node-1 \
+  --raft-peer node-2=127.0.0.1:7001
 ```
 
-Benchmark a running node with 100 concurrent TCP clients:
+Gateway env:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PORT` | `3000` | HTTP listen port |
+| `HOST` | `0.0.0.0` | HTTP bind host |
+| `CLUSTER_HOST` | `127.0.0.1` | Core node host |
+| `CLUSTER_PORT` | `7000` | Core node TCP port |
+| `CLUSTER_NODES` | _(optional)_ | Comma-separated `host:port` list |
+
+## Verification Scripts
 
 ```sh
-cargo run -p core-engine --bin tcp_benchmark -- --addr 127.0.0.1:7000 --clients 100 --payload-size 32
+./scripts/measure-failover.sh      # leader kill → re-election latency
+./scripts/e2e-gateway.sh           # HTTP → binary → Raft → worker result
+./scripts/failure-matrix.sh        # kill node/leader, malformed frame, truncated WAL, reconnect
+./scripts/bench-wal.sh             # WAL append throughput
+./scripts/bench-raft-commit.sh     # Raft commit latency (3 and 5 nodes)
+./scripts/bench-gateway-latency.sh # gateway POST /tasks latency
 ```
 
-Latest local debug-build result on this workspace: `clients=100 successes=100 failures=0 elapsed_ms=855 throughput_rps=116.87`.
+Sample local debug-build numbers (M-series Mac, not production SLOs):
 
-Run the failure matrix (killed node/leader, malformed frame, truncated WAL, reconnect):
+- TCP 100 clients: `successes=100 throughput_rps≈117`
+- WAL append 10k×64B (fsync/record): `throughput_rps≈261`
+- Raft commit p50: 3 nodes ≈27ms, 5 nodes ≈38ms
+- Gateway POST p50 ≈12ms
+- Leader failover ≈216ms (target 150–300ms)
 
-```sh
-./scripts/failure-matrix.sh
-```
+## HTTP API
 
-Benchmarks:
-
-```sh
-./scripts/bench-wal.sh
-./scripts/bench-raft-commit.sh
-./scripts/bench-gateway-latency.sh
-```
-
-Latest local debug-build samples:
-
-- WAL append (`records=10000 payload_size=64`): `throughput_rps=260.52` (fsync per record)
-- Raft commit latency: 3 nodes `p50_ms=26.69`; 5 nodes `p50_ms=38.10`
-- Gateway `POST /tasks` latency: `p50_ms=11.51`
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness |
+| `GET` | `/metrics` | Prometheus-style process metrics |
+| `POST` | `/tasks` | Submit task (`uppercase` \| `echo` \| `reverse`) |
+| `GET` | `/tasks/:id` | Task status and result |
 
 ## Current Status
 
-Phase 0 is complete. Phase 1 has a strict WAL, Rust and TypeScript frame helpers, streaming decoders, max frame-size enforcement, structured error payloads, and a macOS `kqueue` TCP append server. A single Rust node accepts `AppendTask` frames, appends payloads to the WAL, and responds with `Ack` frames.
+Phases **0–6 are complete**: WAL + kqueue TCP, binary protocol, SWIM membership,
+Raft election/replication, gateway task path, failure matrix, and benchmarks.
 
-Phase 1 TCP load validation is complete for 100 concurrent clients. Phase 2 now has UDP datagram transport, Rust membership frame payload codecs, a minimal SWIM `Join`/`JoinAck` runtime, randomized direct probes, indirect `PingReq`, local `Suspect`/`Failed` transitions, piggybacked membership update dissemination, and periodic membership inspection logs. A local three-process smoke test validated discovery, shared active-member maps, and node-kill detection: after killing `node-2`, both remaining nodes logged `node-2=Failed@0`. Phase 3 has a pure Raft election state machine, Raft RPC payload codecs, TCP RequestVote/heartbeat messaging, randomized election timeouts, majority leader election, leader failover, leader WAL append, follower append validation, `next_index`/`match_index` tracking, majority-ACK commit, application of committed entries to an in-memory task state machine (`Pending`/`Running`/`Completed`/`Failed`), and a durable Raft log (`--raft-log`) that replays term/index/task_id/payload metadata on restart. Local five-process smoke tests elected a leader, re-elected a new leader after killing the first, replicated one `AppendTask` to all five node WALs before ACK (`committed entry 1 with 5 replicas`), and `scripts/measure-failover.sh` measured leader failover at 216ms, within the 150-300ms target. A manual leader restart test verified that a task submitted before the kill was still queryable after restart.
+Phase **7 (production readiness)** adds structured logs, metrics, config defaults,
+graceful shutdown, protocol versioning, security notes, deployment guide, WAL
+compaction plan, and a release checklist.
 
-Phase 4 connects the Bun gateway to the Rust cluster end-to-end. The gateway validates `POST /tasks` requests with zod, exposes `GET /tasks/:id` for results, and returns structured error responses. A `ClusterClient` maintains persistent `Bun.connect()` sockets to cluster nodes, tracks the current leader, and follows `409 not raft leader` responses to the real leader. The Rust engine runs a worker thread pool that executes committed tasks (`uppercase`, `echo`, `reverse`) and stores results by task ID. `scripts/e2e-gateway.sh` demonstrates the full flow: `curl POST /tasks` → gateway → Rust leader → Raft commit → worker execution → `curl GET /tasks/:id` returns the completed result.
+## Limitations
 
-Phase 5/6 testing and benchmarking are complete: `scripts/failure-matrix.sh` covers killed non-leader, killed leader, malformed frames, truncated WAL open rejection, and post-restart reconnect; unit/integration coverage includes TCP Error-400 responses and gateway reconnect failover. Benchmark scripts measure WAL append throughput, Raft commit latency (3/5 nodes), and gateway request latency.
+This is a **learning system**, not a production message broker:
+
+- Core engine is **macOS-only** (`kqueue`)
+- No TLS, authentication, or authorization
+- No multi-datacenter / WAN-tuned membership
+- WAL grows without automatic compaction (see `docs/wal-compaction.md`)
+- Task workers are in-process and best-effort after commit
+- Do not expose the gateway or core ports to untrusted networks without hardening
+
+## Documentation
+
+| Doc | Topic |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | Module boundaries |
+| [docs/binary-protocol.md](docs/binary-protocol.md) | Frame format and opcodes |
+| [docs/wal-format.md](docs/wal-format.md) | WAL record layout |
+| [docs/raft-notes.md](docs/raft-notes.md) | Raft design notes |
+| [docs/security.md](docs/security.md) | Threat notes for untrusted clients |
+| [docs/deployment.md](docs/deployment.md) | Local and lab deployment |
+| [docs/wal-compaction.md](docs/wal-compaction.md) | Snapshot / compaction plan |
+| [docs/release-checklist.md](docs/release-checklist.md) | Pre-release checks |
+| [docs/adr/0001-dependency-constraints.md](docs/adr/0001-dependency-constraints.md) | Dependency policy |
+
+## License
+
+MIT — see [LICENSE](LICENSE).

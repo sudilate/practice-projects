@@ -197,22 +197,22 @@ Phase 4 success criteria:
 
 ## 7. Production Readiness
 
-- [ ] Add structured logs.
-- [ ] Add metrics endpoint.
-- [ ] Add configurable ports and data directories.
-- [ ] Add graceful shutdown.
-- [ ] Add snapshot or WAL compaction plan.
-- [ ] Add protocol versioning.
-- [ ] Add security notes for untrusted clients.
-- [ ] Add deployment guide.
-- [ ] Add release checklist.
+- [x] Add structured logs.
+- [x] Add metrics endpoint.
+- [x] Add configurable ports and data directories.
+- [x] Add graceful shutdown.
+- [x] Add snapshot or WAL compaction plan.
+- [x] Add protocol versioning.
+- [x] Add security notes for untrusted clients.
+- [x] Add deployment guide.
+- [x] Add release checklist.
 
 ## 8. Final Push Checklist
 
-- [ ] `cargo fmt --check` passes.
-- [ ] `cargo test` passes.
-- [ ] `bun test` passes.
-- [ ] `bun run typecheck` passes.
-- [ ] All docs match implemented behavior.
-- [ ] Phase success criteria are demonstrated in README or docs.
-- [ ] Git status contains only intentional files.
+- [x] `cargo fmt --check` passes.
+- [x] `cargo test` passes.
+- [x] `bun test` passes.
+- [x] `bun run typecheck` passes.
+- [x] All docs match implemented behavior.
+- [x] Phase success criteria are demonstrated in README or docs.
+- [x] Git status contains only intentional files.

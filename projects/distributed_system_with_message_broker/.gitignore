@@ -2,6 +2,7 @@ target/
 
 gateway/node_modules/
 
+data/
 *.log
 *.wal
 .DS_Store

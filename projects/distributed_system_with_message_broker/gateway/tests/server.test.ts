@@ -128,6 +128,25 @@ describe("gateway HTTP routes", () => {
     expect(body.output).toBe("HELLO");
   });
 
+  test("GET /metrics returns prometheus text", async () => {
+    const server = buildServer({ clusterNodes: [{ host: "127.0.0.1", port: mock.port }] });
+
+    await server.inject({
+      method: "POST",
+      url: "/tasks",
+      payload: { type: "uppercase", payload: "hello" },
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/metrics",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("gateway_http_requests_total");
+    expect(response.body).toContain("gateway_tasks_submitted_total");
+  });
+
   test("POST /tasks follows leader redirection on 409", async () => {
     const leader = await startMockCluster({ acceptLeader: true });
     const follower = await startMockCluster({ acceptLeader: false });

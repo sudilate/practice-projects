@@ -1,7 +1,9 @@
+use crate::log;
+use crate::metrics::Metrics;
 use crate::net::kqueue::{EventFilter, Kqueue};
 use crate::net::raft::{RaftPeer, RaftRuntime};
 use crate::net::swim::MembershipRuntime;
-use crate::protocol::{ErrorResponse, Frame, Opcode, StreamingDecoder};
+use crate::protocol::{ErrorResponse, Frame, Opcode, StreamingDecoder, PROTOCOL_VERSION};
 use crate::storage::Wal;
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
@@ -9,6 +11,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct AppendServer {
@@ -16,6 +19,8 @@ pub struct AppendServer {
     wal: Wal,
     membership: Option<MembershipRuntime>,
     raft: Option<RaftRuntime>,
+    metrics: Arc<Metrics>,
+    node_id: String,
 }
 
 impl AppendServer {
@@ -28,7 +33,18 @@ impl AppendServer {
             wal: Wal::open(wal_path)?,
             membership: None,
             raft: None,
+            metrics: Arc::new(Metrics::new()),
+            node_id: "node-1".to_string(),
         })
+    }
+
+    pub fn with_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.node_id = node_id.into();
+        self
+    }
+
+    pub fn metrics(&self) -> Arc<Metrics> {
+        Arc::clone(&self.metrics)
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -78,6 +94,19 @@ impl AppendServer {
             membership.register_read(&kqueue)?;
         }
         let mut connections = HashMap::new();
+        log::info(
+            "event loop started",
+            &[
+                ("node_id", self.node_id.clone()),
+                (
+                    "addr",
+                    self.listener
+                        .local_addr()
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|_| "unknown".to_string()),
+                ),
+            ],
+        );
 
         while !shutdown.load(Ordering::Relaxed) {
             for event in kqueue.wait(Some(Duration::from_millis(50)))? {
@@ -94,7 +123,9 @@ impl AppendServer {
 
                 match event.filter {
                     EventFilter::Read => self.read_ready(&kqueue, &mut connections, event.fd)?,
-                    EventFilter::Write => write_ready(&kqueue, &mut connections, event.fd)?,
+                    EventFilter::Write => {
+                        write_ready(&kqueue, &mut connections, event.fd, &self.metrics)?
+                    }
                 }
             }
             if let Some(membership) = self.membership.as_mut() {
@@ -105,6 +136,14 @@ impl AppendServer {
             }
         }
 
+        log::info(
+            "event loop shutting down",
+            &[
+                ("node_id", self.node_id.clone()),
+                ("active_connections", connections.len().to_string()),
+            ],
+        );
+        connections.clear();
         Ok(())
     }
 
@@ -115,11 +154,19 @@ impl AppendServer {
     ) -> io::Result<()> {
         loop {
             match self.listener.accept() {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
                     stream.set_nonblocking(true)?;
                     let fd = stream.as_raw_fd();
                     kqueue.register_read(fd)?;
                     connections.insert(fd, Connection::new(stream));
+                    self.metrics.inc_accepts();
+                    log::info(
+                        "tcp accept",
+                        &[
+                            ("node_id", self.node_id.clone()),
+                            ("peer", peer.to_string()),
+                        ],
+                    );
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(error),
@@ -142,14 +189,18 @@ impl AppendServer {
             match connection.stream.read(&mut buffer) {
                 Ok(0) => {
                     connections.remove(&fd);
+                    self.metrics.dec_connections();
                     return Ok(());
                 }
                 Ok(read) => match connection.decoder.push(&buffer[..read]) {
                     Ok(frames) => {
                         for frame in frames {
+                            self.metrics.inc_frames();
                             connection.write_queue.push_back(handle_frame(
                                 &mut self.wal,
                                 self.raft.as_mut(),
+                                &self.metrics,
+                                &self.node_id,
                                 frame,
                             ));
                         }
@@ -158,6 +209,7 @@ impl AppendServer {
                         }
                     }
                     Err(error) => {
+                        self.metrics.inc_protocol_err();
                         connection
                             .write_queue
                             .push_back(error_frame(400, &error.to_string()));
@@ -167,6 +219,7 @@ impl AppendServer {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => {
                     connections.remove(&fd);
+                    self.metrics.dec_connections();
                     return Err(error);
                 }
             }
@@ -194,6 +247,7 @@ fn write_ready(
     kqueue: &Kqueue,
     connections: &mut HashMap<RawFd, Connection>,
     fd: RawFd,
+    metrics: &Metrics,
 ) -> io::Result<()> {
     let Some(connection) = connections.get_mut(&fd) else {
         return Ok(());
@@ -212,6 +266,7 @@ fn write_ready(
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
             Err(error) => {
                 connections.remove(&fd);
+                metrics.dec_connections();
                 return Err(error);
             }
         }
@@ -227,24 +282,66 @@ fn write_ready(
     Ok(())
 }
 
-fn handle_frame(wal: &mut Wal, raft: Option<&mut RaftRuntime>, frame: Frame) -> Vec<u8> {
+fn handle_frame(
+    wal: &mut Wal,
+    raft: Option<&mut RaftRuntime>,
+    metrics: &Metrics,
+    node_id: &str,
+    frame: Frame,
+) -> Vec<u8> {
     match frame.opcode() {
+        Opcode::Hello => {
+            let client_version = frame.payload().first().copied().unwrap_or(0);
+            if client_version != 0 && client_version != PROTOCOL_VERSION {
+                metrics.inc_protocol_err();
+                return error_frame(
+                    400,
+                    &format!(
+                        "unsupported protocol version {client_version}; server speaks {PROTOCOL_VERSION}"
+                    ),
+                );
+            }
+            Frame::new(Opcode::Ack, vec![PROTOCOL_VERSION])
+                .encode()
+                .expect("Hello ACK encodes")
+        }
+        Opcode::GetMetrics => {
+            let body = metrics.render_prometheus(node_id).into_bytes();
+            Frame::new(Opcode::Ack, body)
+                .encode()
+                .expect("metrics ACK encodes")
+        }
         Opcode::AppendTask => {
             if let Some(raft) = raft {
                 return match raft.submit_task(frame.payload(), wal) {
-                    Ok(true) => Frame::new(Opcode::Ack, Vec::new())
-                        .encode()
-                        .expect("ACK frame encodes"),
-                    Ok(false) => error_frame(409, "not raft leader or replication failed"),
-                    Err(error) => error_frame(500, &error.to_string()),
+                    Ok(true) => {
+                        metrics.inc_append_ok();
+                        Frame::new(Opcode::Ack, Vec::new())
+                            .encode()
+                            .expect("ACK frame encodes")
+                    }
+                    Ok(false) => {
+                        metrics.inc_append_err();
+                        error_frame(409, "not raft leader or replication failed")
+                    }
+                    Err(error) => {
+                        metrics.inc_append_err();
+                        error_frame(500, &error.to_string())
+                    }
                 };
             }
 
             match wal.append(frame.payload()) {
-                Ok(_) => Frame::new(Opcode::Ack, Vec::new())
-                    .encode()
-                    .expect("ACK frame encodes"),
-                Err(error) => error_frame(500, &error.to_string()),
+                Ok(_) => {
+                    metrics.inc_append_ok();
+                    Frame::new(Opcode::Ack, Vec::new())
+                        .encode()
+                        .expect("ACK frame encodes")
+                }
+                Err(error) => {
+                    metrics.inc_append_err();
+                    error_frame(500, &error.to_string())
+                }
             }
         }
         Opcode::RequestVote | Opcode::AppendEntries | Opcode::GetTaskStatus => {
@@ -254,7 +351,10 @@ fn handle_frame(wal: &mut Wal, raft: Option<&mut RaftRuntime>, frame: Frame) -> 
             raft.handle_frame(frame.opcode(), frame.payload(), wal)
                 .unwrap_or_else(|error| error_frame(400, &error.to_string()))
         }
-        opcode => error_frame(400, &format!("unsupported opcode: {opcode:?}")),
+        opcode => {
+            metrics.inc_protocol_err();
+            error_frame(400, &format!("unsupported opcode: {opcode:?}"))
+        }
     }
 }
 

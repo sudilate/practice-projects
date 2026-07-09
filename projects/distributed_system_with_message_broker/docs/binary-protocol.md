@@ -27,6 +27,8 @@ The maximum payload length is `1 MiB`.
 | 11 | MembershipUpdate | Disseminated membership state update. |
 | 12 | GetTaskStatus | Query a task's status and result by task ID. |
 | 13 | TaskStatus | Response containing task status, output, and error. |
+| 14 | Hello | Version negotiation. Payload: `[version:u8]` (client). ACK payload: `[version:u8]` (server). |
+| 15 | GetMetrics | Request Prometheus text metrics. ACK payload is UTF-8 metrics body. |
 
 ## Error Payload
 
@@ -102,4 +104,11 @@ Raft log entry payload shape:
 
 Rust and TypeScript both include streaming decoders that retain partial bytes until a complete frame is available. Multiple frames coalesced in one socket read are emitted in order.
 
-Version negotiation remains a future production-readiness task.
+## Protocol Versioning
+
+`PROTOCOL_VERSION` is currently `1`.
+
+- Clients may send `Hello` with payload `[1]` before application traffic.
+- Empty Hello payload is accepted and treated as version discovery.
+- A non-zero client version other than `1` receives `Error` code `400`.
+- Frame layout is unchanged for version 1; future major versions may introduce a new header and a new `PROTOCOL_VERSION` value.

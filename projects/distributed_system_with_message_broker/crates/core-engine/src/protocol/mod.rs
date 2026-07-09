@@ -3,6 +3,8 @@ use std::fmt;
 
 pub const HEADER_LEN: usize = 5;
 pub const MAX_PAYLOAD_LEN: usize = 1024 * 1024;
+/// Wire protocol major version for this implementation.
+pub const PROTOCOL_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -20,6 +22,10 @@ pub enum Opcode {
     MembershipUpdate = 11,
     GetTaskStatus = 12,
     TaskStatus = 13,
+    /// Version negotiation: payload is a single `u8` client version.
+    Hello = 14,
+    /// Metrics scrape over the binary protocol (Prometheus text payload).
+    GetMetrics = 15,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -40,6 +46,8 @@ impl TryFrom<u8> for Opcode {
             11 => Ok(Self::MembershipUpdate),
             12 => Ok(Self::GetTaskStatus),
             13 => Ok(Self::TaskStatus),
+            14 => Ok(Self::Hello),
+            15 => Ok(Self::GetMetrics),
             _ => Err(ProtocolError::UnknownOpcode(value)),
         }
     }
@@ -321,7 +329,7 @@ impl TaskStatusRequest {
 mod tests {
     use super::{
         ErrorResponse, Frame, Opcode, ProtocolError, StreamingDecoder, TaskStatusCode,
-        TaskStatusRequest, TaskStatusResponse, MAX_PAYLOAD_LEN,
+        TaskStatusRequest, TaskStatusResponse, MAX_PAYLOAD_LEN, PROTOCOL_VERSION,
     };
 
     #[test]
@@ -332,6 +340,21 @@ mod tests {
         let decoded = Frame::decode(&encoded).expect("frame decodes");
 
         assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn hello_and_metrics_opcodes_round_trip() {
+        let hello = Frame::new(Opcode::Hello, vec![PROTOCOL_VERSION]);
+        let metrics = Frame::new(Opcode::GetMetrics, Vec::new());
+        assert_eq!(
+            Frame::decode(&hello.encode().expect("encodes")).expect("decodes"),
+            hello
+        );
+        assert_eq!(
+            Frame::decode(&metrics.encode().expect("encodes")).expect("decodes"),
+            metrics
+        );
+        assert_eq!(PROTOCOL_VERSION, 1);
     }
 
     #[test]

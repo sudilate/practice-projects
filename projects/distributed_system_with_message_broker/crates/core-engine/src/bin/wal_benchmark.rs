@@ -26,7 +26,8 @@ fn main() -> std::io::Result<()> {
 
     let records_per_second = config.records as f64 / elapsed.as_secs_f64().max(f64::EPSILON);
     let bytes = config.records as u64 * (4 + config.payload_size as u64);
-    let mib_per_second = (bytes as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64().max(f64::EPSILON);
+    let mib_per_second =
+        (bytes as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64().max(f64::EPSILON);
 
     println!(
         "records={} payload_size={} elapsed_ms={} throughput_rps={:.2} throughput_mib_s={:.2}",

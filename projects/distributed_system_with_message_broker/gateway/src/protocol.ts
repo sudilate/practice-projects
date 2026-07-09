@@ -1,5 +1,6 @@
 export const HEADER_LENGTH = 5;
 export const MAX_PAYLOAD_LENGTH = 1024 * 1024;
+export const PROTOCOL_VERSION = 1;
 
 type Bytes = Uint8Array<ArrayBufferLike>;
 
@@ -17,6 +18,8 @@ export enum Opcode {
   MembershipUpdate = 11,
   GetTaskStatus = 12,
   TaskStatus = 13,
+  Hello = 14,
+  GetMetrics = 15,
 }
 
 export interface Frame {
