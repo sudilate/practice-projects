@@ -130,7 +130,7 @@ Goal: elect a leader and replicate committed task log entries to a majority.
 - [x] Commit only after majority ACK.
 - [x] Apply committed entries to the task state machine.
 - [x] Add failure test for dropped follower catch-up.
-- [ ] Add leader restart test (requires Raft log metadata in WAL).
+- [x] Add leader restart test with durable Raft log metadata (`--raft-log`).
 
 Phase 3 success criteria:
 
@@ -147,43 +147,44 @@ Goal: external clients submit JSON tasks to Bun gateway and receive task results
 - [x] Initialize Bun/Fastify server.
 - [x] Add `GET /health`.
 - [x] Add placeholder `POST /tasks`.
-- [ ] Add request validation schema.
-- [ ] Add structured error responses.
-- [ ] Add integration tests for HTTP routes.
+- [x] Add request validation schema (zod).
+- [x] Add structured error responses.
+- [x] Add `GET /tasks/:id`.
+- [x] Add integration tests for HTTP routes.
 
 ### 4.2 Gateway-to-Cluster Client
 
 - [x] Add TypeScript binary frame helpers.
-- [ ] Maintain persistent `Bun.connect()` sockets to cluster nodes.
-- [ ] Track current leader.
-- [ ] Retry on not-leader responses.
-- [ ] Handle reconnect backoff.
-- [ ] Add request correlation IDs.
+- [x] Maintain persistent `Bun.connect()` sockets to cluster nodes.
+- [x] Track current leader.
+- [x] Retry on not-leader responses.
+- [x] Handle reconnect backoff with exponential backoff per node.
+- [x] Add request correlation IDs for request tracking and logging.
 
 ### 4.3 Task Dispatch
 
-- [ ] Push committed tasks into local worker queue.
-- [ ] Implement worker thread pool.
-- [ ] Store task result by task ID.
-- [ ] Add result retrieval path.
-- [ ] Add idempotency handling for duplicate task IDs.
+- [x] Push committed tasks into local worker queue.
+- [x] Implement worker thread pool.
+- [x] Store task result by task ID.
+- [x] Add result retrieval path (`GetTaskStatus` / `TaskStatus` opcodes).
+- [x] Add idempotency handling for duplicate task IDs.
 
 Phase 4 success criteria:
 
-- [ ] `curl POST /tasks` sends JSON to Bun gateway.
-- [ ] Gateway sends binary frame to Rust leader.
-- [ ] Leader replicates and commits task.
-- [ ] Worker executes task.
-- [ ] Client receives HTTP 200 with result.
+- [x] `curl POST /tasks` sends JSON to Bun gateway.
+- [x] Gateway sends binary frame to Rust leader.
+- [x] Leader replicates and commits task.
+- [x] Worker executes task.
+- [x] Client receives HTTP 200 with result (`scripts/e2e-gateway.sh`).
 
 ## 5. Testing Matrix
 
-- [ ] Rust unit tests for protocol, WAL, SWIM state, and Raft state.
-- [ ] Rust integration tests for single-node TCP flow.
-- [ ] Multi-process tests for 3-node SWIM convergence.
-- [ ] Multi-process tests for 5-node Raft election.
-- [ ] Bun unit tests for protocol and cluster client.
-- [ ] Bun HTTP route tests.
+- [x] Rust unit tests for protocol, WAL, SWIM state, and Raft state.
+- [x] Rust integration tests for single-node TCP flow.
+- [x] Multi-process tests for 3-node SWIM convergence (script).
+- [x] Multi-process tests for 5-node Raft election (script).
+- [x] Bun unit tests for protocol.
+- [x] Bun HTTP route tests.
 - [ ] Failure tests for killed node, killed leader, malformed frame, truncated WAL, and reconnect.
 
 ## 6. Benchmarking

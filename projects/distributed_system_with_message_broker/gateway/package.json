@@ -10,7 +10,8 @@
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "fastify": "latest"
+    "fastify": "latest",
+    "zod": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",

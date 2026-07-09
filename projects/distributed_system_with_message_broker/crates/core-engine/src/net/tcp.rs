@@ -52,6 +52,17 @@ impl AppendServer {
         self
     }
 
+    pub fn with_raft_and_log(
+        mut self,
+        node_id: String,
+        peers: Vec<RaftPeer>,
+        raft_log_path: impl AsRef<Path>,
+    ) -> io::Result<Self> {
+        let runtime = RaftRuntime::new(node_id, peers).with_raft_log(raft_log_path)?;
+        self.raft = Some(runtime);
+        Ok(self)
+    }
+
     pub fn membership_addr(&self) -> Option<io::Result<SocketAddr>> {
         self.membership.as_ref().map(MembershipRuntime::local_addr)
     }
@@ -236,7 +247,7 @@ fn handle_frame(wal: &mut Wal, raft: Option<&mut RaftRuntime>, frame: Frame) -> 
                 Err(error) => error_frame(500, &error.to_string()),
             }
         }
-        Opcode::RequestVote | Opcode::AppendEntries => {
+        Opcode::RequestVote | Opcode::AppendEntries | Opcode::GetTaskStatus => {
             let Some(raft) = raft else {
                 return error_frame(503, "raft runtime is not enabled");
             };

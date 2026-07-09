@@ -16,13 +16,20 @@ fn main() -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         let config = Config::from_env()?;
-        let mut server = AppendServer::bind(config.addr, &config.wal_path)?
-            .with_membership(
+        let mut server = AppendServer::bind(config.addr, &config.wal_path)?.with_membership(
+            config.node_id.clone(),
+            config.membership_addr,
+            config.join_membership_addrs.clone(),
+        )?;
+        server = if let Some(raft_log_path) = &config.raft_log_path {
+            server.with_raft_and_log(
                 config.node_id.clone(),
-                config.membership_addr,
-                config.join_membership_addrs.clone(),
+                config.raft_peers.clone(),
+                raft_log_path,
             )?
-            .with_raft(config.node_id.clone(), config.raft_peers.clone());
+        } else {
+            server.with_raft(config.node_id.clone(), config.raft_peers.clone())
+        };
         println!(
             "core-engine node {} listening on {} with membership {} and WAL {}",
             config.node_id,
@@ -45,6 +52,7 @@ struct Config {
     join_membership_addrs: Vec<SocketAddr>,
     raft_peers: Vec<RaftPeer>,
     wal_path: PathBuf,
+    raft_log_path: Option<PathBuf>,
 }
 
 #[cfg(target_os = "macos")]
@@ -56,6 +64,7 @@ impl Config {
         let mut join_membership_addrs = Vec::new();
         let mut raft_peers = Vec::new();
         let mut wal_path = PathBuf::from("data/node-1.log");
+        let mut raft_log_path = None;
         let mut args = env::args().skip(1);
 
         while let Some(arg) = args.next() {
@@ -103,6 +112,12 @@ impl Config {
                         .ok_or_else(|| invalid_arg("missing --wal value"))?;
                     wal_path = PathBuf::from(value);
                 }
+                "--raft-log" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| invalid_arg("missing --raft-log value"))?;
+                    raft_log_path = Some(PathBuf::from(value));
+                }
                 "--help" | "-h" => {
                     print_usage();
                     std::process::exit(0);
@@ -122,6 +137,7 @@ impl Config {
             join_membership_addrs,
             raft_peers,
             wal_path,
+            raft_log_path,
         })
     }
 }
@@ -150,6 +166,6 @@ fn invalid_arg(message: &str) -> std::io::Error {
 #[cfg(target_os = "macos")]
 fn print_usage() {
     println!(
-        "usage: core-engine [--node-id node-1] [--addr 127.0.0.1:7000] [--membership-addr 127.0.0.1:7100] [--join 127.0.0.1:7100] [--raft-peer node-2=127.0.0.1:7001] [--wal data/node-1.log]"
+        "usage: core-engine [--node-id node-1] [--addr 127.0.0.1:7000] [--membership-addr 127.0.0.1:7100] [--join 127.0.0.1:7100] [--raft-peer node-2=127.0.0.1:7001] [--wal data/node-1.log] [--raft-log data/node-1.raft.log]"
     );
 }

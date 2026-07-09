@@ -1,10 +1,11 @@
-use crate::protocol::{Frame, Opcode};
+use crate::protocol::{Frame, Opcode, TaskStatusCode, TaskStatusResponse};
 use crate::raft::{AppendEntries, RaftMessage, RaftState, RequestVote, Role};
-use crate::storage::Wal;
-use crate::task::TaskState;
+use crate::storage::{RaftLog, Wal};
+use crate::task::{TaskState, WorkerPool, WorkerTask};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 const DEFAULT_ELECTION_TIMEOUT_MIN: Duration = Duration::from_millis(150);
@@ -48,6 +49,8 @@ pub struct RaftRuntime {
     next_index: HashMap<String, u64>,
     match_index: HashMap<String, u64>,
     task_state: TaskState,
+    worker_pool: WorkerPool,
+    raft_log: Option<RaftLog>,
 }
 
 impl RaftRuntime {
@@ -82,9 +85,22 @@ impl RaftRuntime {
             next_index,
             match_index,
             task_state: TaskState::new(),
+            worker_pool: WorkerPool::new(),
+            raft_log: None,
         };
         runtime.reset_election_deadline(now);
         runtime
+    }
+
+    pub fn with_raft_log(mut self, path: impl AsRef<Path>) -> io::Result<Self> {
+        let mut raft_log = RaftLog::open(path)?;
+        let entries: Vec<_> = raft_log.iter()?.collect::<Result<_, _>>()?;
+        self.state.restore_log(entries.clone());
+        for entry in entries {
+            self.task_state.apply(entry.task_id, entry.payload);
+        }
+        self.raft_log = Some(raft_log);
+        Ok(self)
     }
 
     pub fn role(&self) -> Role {
@@ -112,6 +128,7 @@ impl RaftRuntime {
             Role::Follower | Role::Candidate => Ok(()),
         };
         self.apply_committed();
+        self.run_workers();
         result
     }
 
@@ -125,6 +142,31 @@ impl RaftRuntime {
         }
     }
 
+    fn run_workers(&mut self) {
+        for task_id in self.task_state.pending_ids() {
+            let payload = self
+                .task_state
+                .get(&task_id)
+                .map(|task| task.payload.clone())
+                .unwrap_or_default();
+            self.task_state
+                .set_status(&task_id, crate::task::TaskStatus::Running);
+            self.worker_pool.submit(WorkerTask {
+                id: task_id,
+                payload,
+            });
+        }
+        for result in self.worker_pool.drain_results() {
+            self.task_state.set_result(
+                &result.id,
+                crate::task::TaskResult {
+                    output: result.output,
+                    error: result.error,
+                },
+            );
+        }
+    }
+
     pub fn handle_frame(
         &mut self,
         opcode: Opcode,
@@ -134,6 +176,7 @@ impl RaftRuntime {
         match opcode {
             Opcode::RequestVote => self.handle_request_vote_frame(payload),
             Opcode::AppendEntries => self.handle_append_entries_frame(payload, wal),
+            Opcode::GetTaskStatus => self.handle_get_task_status_frame(payload),
             _ => Err(invalid_data("unsupported raft opcode")),
         }
     }
@@ -143,11 +186,18 @@ impl RaftRuntime {
             return Ok(false);
         }
 
-        let task_id = format!("{}-{}", self.node_id, self.state.last_log_index() + 1);
+        let task_id = extract_task_id(payload)
+            .unwrap_or_else(|| format!("{}-{}", self.node_id, self.state.last_log_index() + 1));
+        if self.state.has_task_id(&task_id) {
+            return Ok(true);
+        }
         wal.append(payload)?;
         let entry =
             self.state
                 .append_local_entry(self.state.current_term(), task_id, payload.to_vec());
+        if let Some(raft_log) = self.raft_log.as_mut() {
+            raft_log.append(&entry)?;
+        }
         let mut replicated = 1;
 
         for peer in self.peers.clone() {
@@ -308,6 +358,40 @@ impl RaftRuntime {
         }
     }
 
+    fn handle_get_task_status_frame(&self, payload: &[u8]) -> io::Result<Vec<u8>> {
+        let request = crate::protocol::TaskStatusRequest::decode(payload).map_err(invalid_data)?;
+        let (status, output, error) = self
+            .task_state
+            .get(&request.task_id)
+            .map(|task| {
+                let status = match task.status {
+                    crate::task::TaskStatus::Pending => TaskStatusCode::Pending,
+                    crate::task::TaskStatus::Running => TaskStatusCode::Running,
+                    crate::task::TaskStatus::Completed => TaskStatusCode::Completed,
+                    crate::task::TaskStatus::Failed => TaskStatusCode::Failed,
+                };
+                let output = task
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.output.clone())
+                    .unwrap_or_default();
+                let error = task
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.error.clone())
+                    .unwrap_or_default();
+                (status, output, error)
+            })
+            .unwrap_or((TaskStatusCode::Pending, String::new(), String::new()));
+        let response = TaskStatusResponse {
+            status,
+            output,
+            error,
+        };
+        let payload = response.encode().map_err(invalid_data)?;
+        encode_frame(Opcode::TaskStatus, payload)
+    }
+
     fn handle_append_entries_frame(
         &mut self,
         payload: &[u8],
@@ -321,6 +405,9 @@ impl RaftRuntime {
                 if reply.success {
                     for entry in entries {
                         wal.append(&entry.payload)?;
+                        if let Some(raft_log) = self.raft_log.as_mut() {
+                            raft_log.append(&entry)?;
+                        }
                     }
                     self.apply_committed();
                     self.reset_election_deadline(Instant::now());
@@ -416,6 +503,12 @@ fn seed_from(node_id: &str) -> u64 {
         seed = seed.wrapping_mul(0x100000001b3);
     }
     seed.max(1)
+}
+
+fn extract_task_id(payload: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(payload).ok()?;
+    let json: serde_json::Value = serde_json::from_str(text).ok()?;
+    json.get("id")?.as_str().map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -518,12 +611,96 @@ mod tests {
         let _ = fs::remove_file(wal_path);
     }
 
+    #[test]
+    fn duplicate_task_id_is_idempotent() {
+        let config = RaftRuntimeConfig {
+            election_timeout_min: Duration::from_millis(1),
+            election_timeout_spread: Duration::ZERO,
+            heartbeat_interval: Duration::from_millis(50),
+        };
+        let mut runtime = RaftRuntime::new_with_config("node-a".to_string(), Vec::new(), config);
+        runtime
+            .tick(Instant::now() + Duration::from_millis(2))
+            .expect("leader elected");
+        let wal_path = test_wal_path("idempotent");
+        let mut wal = Wal::open(&wal_path).expect("wal opens");
+        let payload = br#"{"id":"t1","type":"uppercase","payload":"hello"}"#;
+
+        assert!(runtime
+            .submit_task(payload, &mut wal)
+            .expect("first submits"));
+        assert!(runtime
+            .submit_task(payload, &mut wal)
+            .expect("second submits"));
+
+        assert_eq!(runtime.last_log_index(), 1);
+        let _ = fs::remove_file(wal_path);
+    }
+
+    #[test]
+    fn raft_log_replay_restores_task_state() {
+        let config = RaftRuntimeConfig {
+            election_timeout_min: Duration::from_millis(1),
+            election_timeout_spread: Duration::ZERO,
+            heartbeat_interval: Duration::from_millis(50),
+        };
+        let raft_log_path = test_raft_log_path("replay");
+        let wal_path = test_wal_path("replay-wal");
+        let payload = br#"{"id":"t1","type":"uppercase","payload":"hello"}"#;
+        {
+            let mut runtime =
+                RaftRuntime::new_with_config("node-a".to_string(), Vec::new(), config.clone())
+                    .with_raft_log(&raft_log_path)
+                    .expect("raft log opens");
+            runtime
+                .tick(Instant::now() + Duration::from_millis(2))
+                .expect("leader elected");
+            let mut wal = Wal::open(&wal_path).expect("wal opens");
+            assert!(runtime
+                .submit_task(payload, &mut wal)
+                .expect("task submits"));
+            let _ = fs::remove_file(&wal_path);
+        }
+
+        let mut runtime = RaftRuntime::new_with_config("node-a".to_string(), Vec::new(), config)
+            .with_raft_log(&raft_log_path)
+            .expect("raft log reopens");
+        runtime
+            .tick(Instant::now() + Duration::from_millis(2))
+            .expect("leader elected");
+
+        let task = runtime.task_state().get("t1").expect("task restored");
+        assert_eq!(task.payload, payload);
+
+        let request = crate::protocol::TaskStatusRequest {
+            task_id: "t1".to_string(),
+        }
+        .encode()
+        .expect("encodes");
+        let mut wal = Wal::open(&wal_path).expect("wal opens");
+        let response = runtime
+            .handle_frame(Opcode::GetTaskStatus, &request, &mut wal)
+            .expect("handles status");
+        assert!(!response.is_empty());
+
+        let _ = fs::remove_file(&raft_log_path);
+        let _ = fs::remove_file(&wal_path);
+    }
+
     fn test_wal_path(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_nanos();
         std::env::temp_dir().join(format!("core-engine-raft-{name}-{nanos}.log"))
+    }
+
+    fn test_raft_log_path(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos();
+        std::env::temp_dir().join(format!("core-engine-raft-log-{name}-{nanos}.log"))
     }
 
     #[test]
@@ -550,6 +727,47 @@ mod tests {
             .expect("task was applied");
         assert_eq!(task.payload, b"payload");
         assert_eq!(task.status, TaskStatus::Pending);
+        let _ = fs::remove_file(wal_path);
+    }
+
+    #[test]
+    fn worker_pool_executes_committed_task() {
+        let config = RaftRuntimeConfig {
+            election_timeout_min: Duration::from_millis(1),
+            election_timeout_spread: Duration::ZERO,
+            heartbeat_interval: Duration::from_millis(50),
+        };
+        let mut runtime = RaftRuntime::new_with_config("node-a".to_string(), Vec::new(), config);
+        runtime
+            .tick(Instant::now() + Duration::from_millis(2))
+            .expect("leader elected");
+        let wal_path = test_wal_path("sm-worker");
+        let mut wal = Wal::open(&wal_path).expect("wal opens");
+        let payload = br#"{"id":"t1","type":"uppercase","payload":"hello"}"#;
+
+        assert!(runtime
+            .submit_task(payload, &mut wal)
+            .expect("task submits"));
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(500) {
+            runtime.tick(Instant::now()).expect("tick succeeds");
+            if runtime
+                .task_state()
+                .get("t1")
+                .is_some_and(|t| t.status == TaskStatus::Completed)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let task = runtime.task_state().get("t1").expect("task exists");
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert_eq!(
+            task.result.as_ref().and_then(|r| r.output.clone()),
+            Some("HELLO".to_string())
+        );
         let _ = fs::remove_file(wal_path);
     }
 

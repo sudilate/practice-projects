@@ -25,6 +25,8 @@ The maximum payload length is `1 MiB`.
 | 9 | JoinAck | Membership join response with known members. |
 | 10 | PingReq | Membership indirect ping request. |
 | 11 | MembershipUpdate | Disseminated membership state update. |
+| 12 | GetTaskStatus | Query a task's status and result by task ID. |
+| 13 | TaskStatus | Response containing task status, output, and error. |
 
 ## Error Payload
 
@@ -39,6 +41,22 @@ Current server behavior:
 - Unsupported opcodes return `Error` with code `400`.
 - Protocol decoding failures return `Error` with code `400`.
 - WAL append failures return `Error` with code `500`.
+
+## Task Status Payloads
+
+`GetTaskStatus` payload shape:
+
+```text
+[task_id_length: u16 big-endian][task_id: UTF-8 bytes]
+```
+
+`TaskStatus` payload shape:
+
+```text
+[status: u8][output_length: u32 big-endian][output: UTF-8 bytes][error_length: u32 big-endian][error: UTF-8 bytes]
+```
+
+Status values are `0=Pending`, `1=Running`, `2=Completed`, and `3=Failed`.
 
 ## Membership Payloads
 

@@ -205,6 +205,19 @@ impl RaftState {
         applied
     }
 
+    /// Replace the in-memory log with the provided entries and advance
+    /// `commit_index`/`last_applied` to the end. Used when restoring from a
+    /// durable Raft log on startup.
+    pub fn restore_log(&mut self, entries: Vec<RaftLogEntry>) {
+        self.log = entries;
+        self.commit_index = self.last_log_index();
+        self.last_applied = self.commit_index;
+    }
+
+    pub fn has_task_id(&self, task_id: &str) -> bool {
+        self.log.iter().any(|entry| entry.task_id == task_id)
+    }
+
     pub fn handle_request_vote(&mut self, request: RequestVote) -> RequestVoteReply {
         if request.term < self.current_term {
             return RequestVoteReply {

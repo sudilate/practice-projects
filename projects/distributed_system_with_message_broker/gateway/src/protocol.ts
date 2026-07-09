@@ -15,6 +15,8 @@ export enum Opcode {
   JoinAck = 9,
   PingReq = 10,
   MembershipUpdate = 11,
+  GetTaskStatus = 12,
+  TaskStatus = 13,
 }
 
 export interface Frame {
@@ -25,6 +27,23 @@ export interface Frame {
 export interface ErrorResponse {
   code: number;
   message: string;
+}
+
+export enum TaskStatusCode {
+  Pending = 0,
+  Running = 1,
+  Completed = 2,
+  Failed = 3,
+}
+
+export interface TaskStatusResponse {
+  status: TaskStatusCode;
+  output: string;
+  error: string;
+}
+
+export interface TaskStatusRequest {
+  taskId: string;
 }
 
 export function encodeFrame(frame: Frame): Bytes {
@@ -123,6 +142,70 @@ export function decodeErrorResponse(payload: Bytes): ErrorResponse {
   return {
     code,
     message: new TextDecoder().decode(payload.slice(4)),
+  };
+}
+
+export function encodeTaskStatusRequest(request: TaskStatusRequest): Bytes {
+  const taskId = new TextEncoder().encode(request.taskId);
+  if (taskId.byteLength > 0xffff) {
+    throw new Error("task id too long");
+  }
+  const bytes = new Uint8Array(2 + taskId.byteLength);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(0, taskId.byteLength, false);
+  bytes.set(taskId, 2);
+  return bytes;
+}
+
+export function decodeTaskStatusRequest(payload: Bytes): TaskStatusRequest {
+  if (payload.byteLength < 2) {
+    throw new Error("invalid task status request");
+  }
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const taskIdLength = view.getUint16(0, false);
+  if (payload.byteLength !== 2 + taskIdLength) {
+    throw new Error("invalid task status request");
+  }
+  return {
+    taskId: new TextDecoder().decode(payload.slice(2)),
+  };
+}
+
+export function encodeTaskStatusResponse(response: TaskStatusResponse): Bytes {
+  const output = new TextEncoder().encode(response.output);
+  const error = new TextEncoder().encode(response.error);
+  if (output.byteLength > 0xffffffff || error.byteLength > 0xffffffff) {
+    throw new Error("task status response too large");
+  }
+  const bytes = new Uint8Array(1 + 4 + output.byteLength + 4 + error.byteLength);
+  const view = new DataView(bytes.buffer);
+  view.setUint8(0, response.status);
+  view.setUint32(1, output.byteLength, false);
+  bytes.set(output, 5);
+  view.setUint32(5 + output.byteLength, error.byteLength, false);
+  bytes.set(error, 9 + output.byteLength);
+  return bytes;
+}
+
+export function decodeTaskStatusResponse(payload: Bytes): TaskStatusResponse {
+  if (payload.byteLength < 9) {
+    throw new Error("invalid task status response");
+  }
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const status = view.getUint8(0) as TaskStatusCode;
+  const outputLength = view.getUint32(1, false);
+  const errorLengthOffset = 5 + outputLength;
+  if (payload.byteLength < errorLengthOffset + 4) {
+    throw new Error("invalid task status response");
+  }
+  const errorLength = view.getUint32(errorLengthOffset, false);
+  if (payload.byteLength !== errorLengthOffset + 4 + errorLength) {
+    throw new Error("invalid task status response");
+  }
+  return {
+    status,
+    output: new TextDecoder().decode(payload.slice(5, errorLengthOffset)),
+    error: new TextDecoder().decode(payload.slice(errorLengthOffset + 4)),
   };
 }
 

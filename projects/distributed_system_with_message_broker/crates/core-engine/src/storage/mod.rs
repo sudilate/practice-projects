@@ -1,6 +1,10 @@
+pub mod raft_log;
+
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+
+pub use raft_log::RaftLog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogPosition {

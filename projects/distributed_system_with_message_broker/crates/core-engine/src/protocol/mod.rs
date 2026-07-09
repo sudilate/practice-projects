@@ -18,6 +18,8 @@ pub enum Opcode {
     JoinAck = 9,
     PingReq = 10,
     MembershipUpdate = 11,
+    GetTaskStatus = 12,
+    TaskStatus = 13,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -36,6 +38,8 @@ impl TryFrom<u8> for Opcode {
             9 => Ok(Self::JoinAck),
             10 => Ok(Self::PingReq),
             11 => Ok(Self::MembershipUpdate),
+            12 => Ok(Self::GetTaskStatus),
+            13 => Ok(Self::TaskStatus),
             _ => Err(ProtocolError::UnknownOpcode(value)),
         }
     }
@@ -181,6 +185,8 @@ pub enum ProtocolError {
     IncompleteFrame,
     PayloadTooLarge,
     InvalidErrorPayload,
+    InvalidTaskStatusPayload,
+    InvalidTaskStatus(u8),
     TrailingBytes,
     UnknownOpcode(u8),
 }
@@ -191,6 +197,8 @@ impl fmt::Display for ProtocolError {
             Self::IncompleteFrame => write!(f, "incomplete frame"),
             Self::PayloadTooLarge => write!(f, "payload too large"),
             Self::InvalidErrorPayload => write!(f, "invalid error payload"),
+            Self::InvalidTaskStatusPayload => write!(f, "invalid task status payload"),
+            Self::InvalidTaskStatus(status) => write!(f, "invalid task status: {status}"),
             Self::TrailingBytes => write!(f, "frame contains trailing bytes"),
             Self::UnknownOpcode(opcode) => write!(f, "unknown opcode: {opcode}"),
         }
@@ -199,9 +207,122 @@ impl fmt::Display for ProtocolError {
 
 impl std::error::Error for ProtocolError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TaskStatusCode {
+    Pending = 0,
+    Running = 1,
+    Completed = 2,
+    Failed = 3,
+}
+
+impl TryFrom<u8> for TaskStatusCode {
+    type Error = ProtocolError;
+
+    fn try_from(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            0 => Ok(Self::Pending),
+            1 => Ok(Self::Running),
+            2 => Ok(Self::Completed),
+            3 => Ok(Self::Failed),
+            _ => Err(ProtocolError::InvalidTaskStatus(value)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStatusResponse {
+    pub status: TaskStatusCode,
+    pub output: String,
+    pub error: String,
+}
+
+impl TaskStatusResponse {
+    pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
+        let output = self.output.as_bytes();
+        let error = self.error.as_bytes();
+        let output_len = u32::try_from(output.len()).map_err(|_| ProtocolError::PayloadTooLarge)?;
+        let error_len = u32::try_from(error.len()).map_err(|_| ProtocolError::PayloadTooLarge)?;
+        let mut payload = Vec::with_capacity(1 + 4 + output.len() + 4 + error.len());
+        payload.push(self.status as u8);
+        payload.extend_from_slice(&output_len.to_be_bytes());
+        payload.extend_from_slice(output);
+        payload.extend_from_slice(&error_len.to_be_bytes());
+        payload.extend_from_slice(error);
+        Ok(payload)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, ProtocolError> {
+        if payload.len() < 9 {
+            return Err(ProtocolError::InvalidTaskStatusPayload);
+        }
+        let status = TaskStatusCode::try_from(payload[0])?;
+        let output_len =
+            u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]) as usize;
+        let error_len_offset = 5 + output_len;
+        if payload.len() < error_len_offset + 4 {
+            return Err(ProtocolError::InvalidTaskStatusPayload);
+        }
+        let error_len = u32::from_be_bytes([
+            payload[error_len_offset],
+            payload[error_len_offset + 1],
+            payload[error_len_offset + 2],
+            payload[error_len_offset + 3],
+        ]) as usize;
+        if payload.len() != error_len_offset + 4 + error_len {
+            return Err(ProtocolError::InvalidTaskStatusPayload);
+        }
+        let output = std::str::from_utf8(&payload[5..error_len_offset])
+            .map_err(|_| ProtocolError::InvalidTaskStatusPayload)?
+            .to_string();
+        let error = std::str::from_utf8(&payload[error_len_offset + 4..])
+            .map_err(|_| ProtocolError::InvalidTaskStatusPayload)?
+            .to_string();
+        Ok(Self {
+            status,
+            output,
+            error,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStatusRequest {
+    pub task_id: String,
+}
+
+impl TaskStatusRequest {
+    pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
+        let task_id = self.task_id.as_bytes();
+        let task_id_len =
+            u16::try_from(task_id.len()).map_err(|_| ProtocolError::PayloadTooLarge)?;
+        let mut payload = Vec::with_capacity(2 + task_id.len());
+        payload.extend_from_slice(&task_id_len.to_be_bytes());
+        payload.extend_from_slice(task_id);
+        Ok(payload)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, ProtocolError> {
+        if payload.len() < 2 {
+            return Err(ProtocolError::InvalidTaskStatusPayload);
+        }
+        let task_id_len = u16::from_be_bytes([payload[0], payload[1]]) as usize;
+        if payload.len() != 2 + task_id_len {
+            return Err(ProtocolError::InvalidTaskStatusPayload);
+        }
+        let task_id = std::str::from_utf8(&payload[2..])
+            .map_err(|_| ProtocolError::InvalidTaskStatusPayload)?
+            .to_string();
+        Ok(Self { task_id })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ErrorResponse, Frame, Opcode, ProtocolError, StreamingDecoder, MAX_PAYLOAD_LEN};
+    use super::{
+        ErrorResponse, Frame, Opcode, ProtocolError, StreamingDecoder, TaskStatusCode,
+        TaskStatusRequest, TaskStatusResponse, MAX_PAYLOAD_LEN,
+    };
 
     #[test]
     fn frame_round_trips() {
@@ -278,6 +399,32 @@ mod tests {
         };
 
         let decoded = ErrorResponse::decode(&response.encode().expect("payload encodes"))
+            .expect("payload decodes");
+
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn task_status_request_payload_round_trips() {
+        let request = TaskStatusRequest {
+            task_id: "task-123".to_string(),
+        };
+
+        let decoded = TaskStatusRequest::decode(&request.encode().expect("payload encodes"))
+            .expect("payload decodes");
+
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn task_status_response_payload_round_trips() {
+        let response = TaskStatusResponse {
+            status: TaskStatusCode::Completed,
+            output: "HELLO".to_string(),
+            error: "".to_string(),
+        };
+
+        let decoded = TaskStatusResponse::decode(&response.encode().expect("payload encodes"))
             .expect("payload decodes");
 
         assert_eq!(decoded, response);

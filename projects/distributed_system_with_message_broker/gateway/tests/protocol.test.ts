@@ -2,11 +2,16 @@ import { describe, expect, test } from "bun:test";
 import {
   decodeErrorResponse,
   decodeFrame,
+  decodeTaskStatusRequest,
+  decodeTaskStatusResponse,
   encodeErrorResponse,
   encodeFrame,
+  encodeTaskStatusRequest,
+  encodeTaskStatusResponse,
   MAX_PAYLOAD_LENGTH,
   Opcode,
   StreamingDecoder,
+  TaskStatusCode,
 } from "../src/protocol";
 
 describe("binary protocol", () => {
@@ -58,5 +63,21 @@ describe("binary protocol", () => {
     const response = { code: 400, message: "bad frame" };
 
     expect(decodeErrorResponse(encodeErrorResponse(response))).toEqual(response);
+  });
+
+  test("task status request payload round trips", () => {
+    const request = { taskId: "task-123" };
+
+    expect(decodeTaskStatusRequest(encodeTaskStatusRequest(request))).toEqual(request);
+  });
+
+  test("task status response payload round trips", () => {
+    const response = {
+      status: TaskStatusCode.Completed,
+      output: "HELLO",
+      error: "",
+    };
+
+    expect(decodeTaskStatusResponse(encodeTaskStatusResponse(response))).toEqual(response);
   });
 });
